@@ -1,0 +1,45 @@
+// Vita3K emulator project
+// Copyright (C) 2026 Vita3K team
+//
+// This program is free software; you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation; either version 2 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along
+// with this program; if not, write to the Free Software Foundation, Inc.,
+// 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+// Expand one P8 mip from retained indices and a 256-color palette into RGBA8.
+// Compile with: glslc -O -fshader-stage=compute --target-env=vulkan1.0 palette_expand.comp -o palette_expand.comp.spv
+// Store the resulting 32-bit words in renderer/src/vulkan/palette_expand_spv.h.
+
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform usampler2D indices;
+// Match guest color packing (first byte in the low bits) and std140's 16-byte array stride.
+layout(set = 0, binding = 1, std140) uniform Palette {
+    uvec4 colors[64];
+} palette;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D expanded;
+
+layout(push_constant) uniform Constants {
+    int mip_level;
+} constants;
+
+void main() {
+    const ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, imageSize(expanded))))
+        return;
+
+    const uint index = texelFetch(indices, coord, constants.mip_level).r;
+    const uint color = palette.colors[index >> 2][index & 3u];
+    imageStore(expanded, coord, unpackUnorm4x8(color));
+}

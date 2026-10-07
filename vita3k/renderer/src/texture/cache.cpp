@@ -317,6 +317,16 @@ bool TextureCache::init(const bool hashless_texture_cache, const fs::path &textu
     return true;
 }
 
+bool TextureCache::can_expand_palette(const SceGxmTexture &texture) {
+    return false;
+}
+
+void TextureCache::upload_paletted_texture(const SceGxmTexture &texture, MemState &mem, bool upload_indices) {}
+
+uint64_t TextureCache::get_palette_epoch() const {
+    return 0;
+}
+
 void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &mem) {
     R_PROFILE(__func__);
 
@@ -440,6 +450,8 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
         switch (base_format) {
         case SCE_GXM_TEXTURE_BASE_FORMAT_P4:
         case SCE_GXM_TEXTURE_BASE_FORMAT_P8:
+            if (upload_palette_indices && base_format == SCE_GXM_TEXTURE_BASE_FORMAT_P8)
+                break;
             texture_data_decompressed.resize(pixels_per_stride * memory_height * 4);
             if (base_format == SCE_GXM_TEXTURE_BASE_FORMAT_P8) {
                 palette_texture_to_rgba_8(reinterpret_cast<uint32_t *>(texture_data_decompressed.data()),
@@ -612,6 +624,9 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
     }
 }
 
+// Palette address bits in the final texture control word.
+static constexpr uint32_t PALETTE_ADDRESS_MASK = 0x03FFFFFF;
+
 // remove everything related to the sampler state
 static constexpr TextureGxmDataRepr default_texture_mask = {
     0x981E0000,
@@ -632,6 +647,29 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
     size_t index = 0;
     bool configure = false;
     bool upload = false;
+    bool upload_pixels = true;
+
+    // Use write protection only when enough complete pages belong to the texture.
+    const uint32_t first_mip_size = gxm::texture_size_first_mip(gxm_texture);
+    Address range_protect_begin = 0;
+    Address range_protect_end = 0;
+    bool is_protected = false;
+    if (use_protect && first_mip_size >= mem.host_page_size * 4) {
+        range_protect_begin = align(gxm_texture.data_addr << 2, mem.host_page_size);
+        range_protect_end = align_down((gxm_texture.data_addr << 2) + first_mip_size, mem.host_page_size);
+        is_protected = (range_protect_end - range_protect_begin >= mem.host_page_size * 4);
+    }
+
+    // Pixel write protection misses palette-only changes, so hash the palette separately.
+    const SceGxmTextureBaseFormat base_format = gxm::get_base_format(gxm::get_format(gxm_texture));
+    const bool track_palette = is_protected && gxm::is_paletted_format(base_format) && gxm_texture.palette_addr != 0;
+    uint64_t palette_hash = 0;
+    bool gpu_palette = false;
+    if (track_palette) {
+        palette_hash = hash_palette_data(gxm_texture, (base_format == SCE_GXM_TEXTURE_BASE_FORMAT_P4) ? 16 : 256, mem);
+        // Texture export and replacement require decoded pixels.
+        gpu_palette = !import_textures && !export_textures && can_expand_palette(gxm_texture);
+    }
 
     // Try to find GXM texture in cache.
     int cached_gxm_texture_index = -1;
@@ -642,13 +680,22 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
         for (int i = 0; i < 4; i++)
             texture_repr[i] &= mask[i];
     }
+    // Share retained indices across rotating palette buffers to avoid duplicate texture uploads.
+    const TextureGxmDataRepr texture_repr_with_palette = texture_repr;
+    if (gpu_palette)
+        texture_repr[3] &= ~PALETTE_ADDRESS_MASK;
     auto gxm_it = texture_lookup.find(texture_repr);
+    if (gpu_palette && gxm_it != texture_lookup.end()) {
+        const TextureCacheInfo *shared = gxm_it->second;
+        if (shared->palette_hash != palette_hash && shared->palette_epoch == get_palette_epoch()) {
+            // Earlier draws in this epoch need the existing colors; use a separate entry for this palette address.
+            texture_repr = texture_repr_with_palette;
+            gxm_it = texture_lookup.find(texture_repr);
+        }
+    }
     if (gxm_it != texture_lookup.end())
         // we found the texture in the cache
         cached_gxm_texture_index = gxm_it->second->index;
-
-    Address range_protect_begin = 0;
-    Address range_protect_end = 0;
 
     TextureCacheInfo *info;
     if (cached_gxm_texture_index == -1) {
@@ -666,7 +713,7 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
         configure = true;
         upload = true;
         // only hash the first mips, assume no game would modify other mips (and faces) without modifying the first one
-        info->texture_size = gxm::texture_size_first_mip(gxm_texture);
+        info->texture_size = first_mip_size;
         // use the texture_repr representation, it contains everything we need and we can use it to erase the key
         // from texture_lookup later
         info->texture = std::bit_cast<SceGxmTexture>(texture_repr);
@@ -675,17 +722,7 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
         // (for example, uniform buffer value and texture data got mixed, so page faults are triggered too many, it's not always good).
         // This works under the assumption that once this big enough texture decided to modify. It will have to modify either all of its data,
         // or replace with an entire new texture.
-        bool should_use_hash = true;
-        if (use_protect && info->texture_size >= mem.host_page_size * 4) {
-            range_protect_begin = align(gxm_texture.data_addr << 2, mem.host_page_size);
-            range_protect_end = align_down((gxm_texture.data_addr << 2) + info->texture_size, mem.host_page_size);
-
-            if (range_protect_end - range_protect_begin >= mem.host_page_size * 4) {
-                should_use_hash = false;
-            }
-        }
-
-        info->use_hash = should_use_hash;
+        info->use_hash = !is_protected;
         if (info->use_hash) {
             if (import_textures || export_textures)
                 info->hash = hash_texture_nostride(gxm_texture, mem);
@@ -693,6 +730,7 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
                 // the xor 1 is to make sure it won't be the same as hash_texture_nostride
                 info->hash = hash_texture_data(gxm_texture, info->texture_size, mem) ^ 1;
         }
+        info->gpu_palette = gpu_palette;
     } else {
         // Texture is cached.
         index = cached_gxm_texture_index;
@@ -707,12 +745,18 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
 
             upload = previous_hash != info->hash;
         } else {
-            range_protect_begin = align(gxm_texture.data_addr << 2, mem.host_page_size);
-            range_protect_end = align_down((gxm_texture.data_addr << 2) + info->texture_size, mem.host_page_size);
             upload = info->dirty;
+            if (!upload && track_palette && info->palette_hash != palette_hash) {
+                upload = true;
+                upload_pixels = false;
+            }
         }
     }
     current_info = info;
+    if (track_palette) {
+        info->palette_hash = palette_hash;
+        info->palette_epoch = get_palette_epoch();
+    }
 
     if (gxm_texture.data_addr == 0) {
         upload = false;
@@ -759,10 +803,12 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
 
         if (importing_texture)
             import_upload_texture();
+        else if (info->gpu_palette)
+            upload_paletted_texture(gxm_texture, mem, upload_pixels);
         else
             upload_texture(gxm_texture, mem);
 
-        if (!info->use_hash) {
+        if (!info->use_hash && upload_pixels) {
             info->dirty = false;
             add_protect(mem, range_protect_begin, range_protect_end - range_protect_begin, MemPerm::ReadOnly, [info, texture_repr](Address, bool) {
                 if (memcmp(&info->texture, &texture_repr, sizeof(SceGxmTexture)) == 0) {
@@ -773,7 +819,9 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
             });
         }
 
-        upload_done();
+        // GPU expansion completes its own upload transitions.
+        if (!info->gpu_palette || importing_texture)
+            upload_done();
         if (export_textures && !importing_texture)
             export_done();
         if (importing_texture)

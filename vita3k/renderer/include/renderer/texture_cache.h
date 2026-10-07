@@ -61,6 +61,12 @@ struct TextureCacheInfo {
     uint16_t height = 0;
     uint16_t mip_count = 0;
     SceGxmTextureBaseFormat format;
+    // Tracks palette writes that pixel memory protection cannot detect.
+    uint64_t palette_hash = 0;
+    // Epoch of the last bind, used to protect earlier draws from palette changes.
+    uint64_t palette_epoch = 0;
+    // The backend retains indices for palette expansion.
+    bool gpu_palette = false;
 };
 
 struct SamplerCacheInfo {
@@ -101,6 +107,9 @@ protected:
     // if set to false, save textures as dds
     bool save_as_png = true;
     bool export_textures = false;
+
+    // Upload linear P8 indices instead of decoding colors on the CPU.
+    bool upload_palette_indices = false;
 
 public:
     Backend backend;
@@ -149,6 +158,13 @@ public:
     virtual void configure_texture(const SceGxmTexture &texture) = 0;
     virtual void upload_texture_impl(SceGxmTextureBaseFormat base_format, uint32_t width, uint32_t height, uint32_t mip_index, const void *pixels, int face, uint32_t pixels_per_stride) = 0;
     virtual void upload_done() {}
+
+    // Backends that retain indices can reuse a cache entry across palette addresses.
+    virtual bool can_expand_palette(const SceGxmTexture &texture);
+    // Skip the index upload when only the palette changed.
+    virtual void upload_paletted_texture(const SceGxmTexture &texture, MemState &mem, bool upload_indices);
+    // Identifies draws that must not share an image expanded with different palettes.
+    virtual uint64_t get_palette_epoch() const;
 
     virtual void configure_sampler(size_t index, const SceGxmTexture &texture, bool no_linear) {}
 

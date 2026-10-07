@@ -51,6 +51,15 @@ struct TextureCacheEntry {
     bool is_cube;
     uint16_t mip_count;
     uint32_t memory_needed;
+
+    // Compute expansion writes texture from the retained indices and palette.
+    bool gpu_palette = false;
+    // R8_UINT indices with the same dimensions and mip levels as texture.
+    vkutil::Image indices;
+    // Storage-image views expose one output mip at a time.
+    std::vector<vk::ImageView> mip_views;
+    vk::DescriptorPool palette_pool;
+    std::vector<vk::DescriptorSet> palette_sets;
 };
 
 struct VKTextureCache : public TextureCache {
@@ -59,7 +68,7 @@ struct VKTextureCache : public TextureCache {
     TextureStagingBuffer staging_buffers[NB_TEXTURE_STAGING_BUFFERS];
     uint32_t staging_idx = 0;
     uint64_t last_waited_scene = 0;
-    uint64_t current_scene_timestamp;
+    uint64_t current_scene_timestamp = 0;
 
     std::array<TextureCacheEntry, TextureCacheSize> textures;
     std::vector<vk::Sampler> samplers;
@@ -68,6 +77,16 @@ struct VKTextureCache : public TextureCache {
     const SceGxmTexture *gxm_texture = nullptr;
     vk::CommandBuffer cmd_buffer = nullptr;
     bool is_texture_transfer_ready = false;
+
+    bool palette_expansion_ready = false;
+    vk::ShaderModule palette_shader;
+    vk::Sampler palette_sampler;
+    vk::DescriptorSetLayout palette_set_layout;
+    vk::PipelineLayout palette_pipeline_layout;
+    vk::Pipeline palette_pipeline;
+    // Shared by all expansions; updates are serialized in the command buffer.
+    vkutil::Buffer palette_buffer;
+    bool uploading_indices = false;
 
     VKTextureCache(VKState &state);
     // get an available staging buffer, wait for one if all are busy
@@ -78,6 +97,15 @@ struct VKTextureCache : public TextureCache {
     void configure_texture(const SceGxmTexture &texture) override;
     void upload_texture_impl(SceGxmTextureBaseFormat base_format, uint32_t width, uint32_t height, uint32_t mip_index, const void *pixels, int face, uint32_t pixels_per_stride) override;
     void upload_done() override;
+
+    bool can_expand_palette(const SceGxmTexture &texture) override;
+    void upload_paletted_texture(const SceGxmTexture &texture, MemState &mem, bool upload_indices) override;
+    uint64_t get_palette_epoch() const override;
+    void init_palette_expansion();
+    void cleanup_palette_expansion();
+    // Defer destruction until in-flight expansions have finished.
+    void release_palette_objects(TextureCacheEntry &entry);
+    vkutil::Image &upload_target();
 
     void configure_sampler(size_t index, const SceGxmTexture &texture, bool no_linear) override;
 

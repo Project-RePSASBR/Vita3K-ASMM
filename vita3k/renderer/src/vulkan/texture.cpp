@@ -19,6 +19,8 @@
 
 #include <renderer/vulkan/gxm_to_vulkan.h>
 
+#include "palette_expand_spv.h"
+
 #include <vulkan/vulkan_format_traits.hpp>
 
 #include <gxm/functions.h>
@@ -61,7 +63,21 @@ void VKTextureCache::cleanup() {
     for (auto &entry : textures) {
         if (entry.texture.image)
             entry.texture.destroy();
+
+        if (entry.indices.image)
+            entry.indices.destroy();
+        for (auto &view : entry.mip_views)
+            state.device.destroy(view);
+        entry.mip_views.clear();
+        if (entry.palette_pool) {
+            state.device.destroy(entry.palette_pool);
+            entry.palette_pool = nullptr;
+        }
+        entry.palette_sets.clear();
+        entry.gpu_palette = false;
     }
+
+    cleanup_palette_expansion();
 
     for (auto &sampler : samplers)
         state.device.destroy(sampler);
@@ -261,9 +277,9 @@ void VKTextureCache::prepare_staging_buffer(bool is_configure) {
 
     // if this is done during configure, layout is undefined, otherwise it is shader read only
     if (is_configure)
-        vkutil::transition_image_layout(cmd_buffer, current_texture->texture.image, vkutil::ImageLayout::Undefined, vkutil::ImageLayout::TransferDst, range);
+        vkutil::transition_image_layout(cmd_buffer, upload_target().image, vkutil::ImageLayout::Undefined, vkutil::ImageLayout::TransferDst, range);
     else
-        vkutil::transition_image_layout_discard(cmd_buffer, current_texture->texture.image, vkutil::ImageLayout::SampledImage, vkutil::ImageLayout::TransferDst, range);
+        vkutil::transition_image_layout_discard(cmd_buffer, upload_target().image, vkutil::ImageLayout::SampledImage, vkutil::ImageLayout::TransferDst, range);
 
     is_texture_transfer_ready = true;
 }
@@ -302,7 +318,158 @@ bool VKTextureCache::init(const bool hashless_texture_cache, const fs::path &tex
     const vk::FormatProperties astc_support = state.physical_device.getFormatProperties(vk::Format::eAstc4x4SrgbBlock);
     support_astc = static_cast<bool>(astc_support.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage);
 
+    init_palette_expansion();
+
     return true;
+}
+
+void VKTextureCache::init_palette_expansion() {
+    const vk::FormatProperties indices_support = state.physical_device.getFormatProperties(vk::Format::eR8Uint);
+    const vk::FormatProperties colors_support = state.physical_device.getFormatProperties(vk::Format::eR8G8B8A8Unorm);
+    if (!(indices_support.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage)
+        || !(colors_support.optimalTilingFeatures & vk::FormatFeatureFlagBits::eStorageImage)) {
+        LOG_INFO("The GPU can not expand paletted textures, they will be converted on the CPU");
+        return;
+    }
+
+    try {
+        vk::Device device = state.device;
+
+        palette_shader = vkutil::load_shader(device, PALETTE_EXPAND_SPV, sizeof(PALETTE_EXPAND_SPV));
+
+        // Integer indices require nearest filtering.
+        vk::SamplerCreateInfo sampler_info{
+            .magFilter = vk::Filter::eNearest,
+            .minFilter = vk::Filter::eNearest,
+            .mipmapMode = vk::SamplerMipmapMode::eNearest,
+            .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+            .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+            .addressModeW = vk::SamplerAddressMode::eClampToEdge,
+            .maxLod = VK_LOD_CLAMP_NONE,
+        };
+        palette_sampler = device.createSampler(sampler_info);
+
+        // Bindings match palette_expand.comp: indices, palette, and output mip.
+        const std::array<vk::DescriptorSetLayoutBinding, 3> layout_bindings = {
+            vk::DescriptorSetLayoutBinding{
+                .binding = 0,
+                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                .descriptorCount = 1,
+                .stageFlags = vk::ShaderStageFlagBits::eCompute },
+            vk::DescriptorSetLayoutBinding{
+                .binding = 1,
+                .descriptorType = vk::DescriptorType::eUniformBuffer,
+                .descriptorCount = 1,
+                .stageFlags = vk::ShaderStageFlagBits::eCompute },
+            vk::DescriptorSetLayoutBinding{
+                .binding = 2,
+                .descriptorType = vk::DescriptorType::eStorageImage,
+                .descriptorCount = 1,
+                .stageFlags = vk::ShaderStageFlagBits::eCompute },
+        };
+        vk::DescriptorSetLayoutCreateInfo layout_create_info{};
+        layout_create_info.setBindings(layout_bindings);
+        palette_set_layout = device.createDescriptorSetLayout(layout_create_info);
+
+        // Select the source mip corresponding to the single-mip output view.
+        const vk::PushConstantRange push_constant{
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+            .offset = 0,
+            .size = sizeof(int32_t),
+        };
+        vk::PipelineLayoutCreateInfo layout_info{};
+        layout_info.setSetLayouts(palette_set_layout);
+        layout_info.setPushConstantRanges(push_constant);
+        palette_pipeline_layout = device.createPipelineLayout(layout_info);
+
+        const vk::ComputePipelineCreateInfo compute_info{
+            .stage = {
+                .stage = vk::ShaderStageFlagBits::eCompute,
+                .module = palette_shader,
+                .pName = "main" },
+            .layout = palette_pipeline_layout
+        };
+        const auto result = device.createComputePipeline(nullptr, compute_info);
+        palette_pipeline = result.value;
+        if (result.result != vk::Result::eSuccess) {
+            cleanup_palette_expansion();
+            LOG_ERROR("Failed to create the palette expansion pipeline, paletted textures will be converted on the CPU");
+            return;
+        }
+
+        palette_buffer.size = 256 * sizeof(uint32_t);
+        palette_buffer.init_buffer(vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eTransferDst);
+
+        palette_expansion_ready = true;
+        LOG_INFO("Paletted textures are expanded on the GPU");
+    } catch (const vk::SystemError &error) {
+        cleanup_palette_expansion();
+        LOG_ERROR("Could not set up the palette expansion ({}), paletted textures will be converted on the CPU", error.what());
+    }
+}
+
+void VKTextureCache::cleanup_palette_expansion() {
+    // Initialization can fail after only some of these objects have been created.
+    if (palette_pipeline) {
+        state.device.destroy(palette_pipeline);
+        palette_pipeline = nullptr;
+    }
+    if (palette_pipeline_layout) {
+        state.device.destroy(palette_pipeline_layout);
+        palette_pipeline_layout = nullptr;
+    }
+    if (palette_set_layout) {
+        state.device.destroy(palette_set_layout);
+        palette_set_layout = nullptr;
+    }
+    if (palette_sampler) {
+        state.device.destroy(palette_sampler);
+        palette_sampler = nullptr;
+    }
+    if (palette_shader) {
+        state.device.destroy(palette_shader);
+        palette_shader = nullptr;
+    }
+    palette_buffer.destroy();
+    palette_expansion_ready = false;
+}
+
+uint64_t VKTextureCache::get_palette_epoch() const {
+    return current_scene_timestamp;
+}
+
+vkutil::Image &VKTextureCache::upload_target() {
+    return uploading_indices ? current_texture->indices : current_texture->texture;
+}
+
+bool VKTextureCache::can_expand_palette(const SceGxmTexture &texture) {
+    if (!palette_expansion_ready)
+        return false;
+
+    if (gxm::get_base_format(gxm::get_format(texture)) != SCE_GXM_TEXTURE_BASE_FORMAT_P8)
+        return false;
+
+    // sRGB images cannot be storage-image targets.
+    if (texture.gamma_mode)
+        return false;
+
+    const SceGxmTextureType type = texture.texture_type();
+    return type != SCE_GXM_TEXTURE_CUBE && type != SCE_GXM_TEXTURE_CUBE_ARBITRARY;
+}
+
+void VKTextureCache::release_palette_objects(TextureCacheEntry &entry) {
+    vkutil::DestroyQueue &destroy_queue = state.frame().destroy_queue;
+
+    if (entry.indices.image)
+        destroy_queue.add_image(entry.indices);
+    for (auto &view : entry.mip_views)
+        destroy_queue.add(view);
+    entry.mip_views.clear();
+    // Destroying the pool also frees its descriptor sets.
+    if (entry.palette_pool)
+        destroy_queue.add(entry.palette_pool);
+    entry.palette_sets.clear();
+    entry.gpu_palette = false;
 }
 
 void VKTextureCache::select(size_t index, const SceGxmTexture &texture) {
@@ -386,9 +553,12 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
     if (gxm_texture.gamma_mode)
         vk_format = linear_to_srgb(vk_format);
 
+    const bool expand_palette = current_info->gpu_palette;
+
     current_texture->mip_count = mip_count;
     current_texture->is_cube = is_cube;
-    uint32_t memory_needed = get_image_memory_upper_bound(gxm_texture, vk_format, base_format);
+    // GPU expansion only needs staging space for indices.
+    uint32_t memory_needed = get_image_memory_upper_bound(gxm_texture, expand_palette ? vk::Format::eR8Uint : vk_format, base_format);
     if (mip_count > 1)
         // using mips, the overall memory needed will be 4/3 of the base memory
         // round up to 3/2
@@ -402,6 +572,7 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
     // because of texture importation, we must be careful when destroying an image
     if (image.image)
         state.frame().destroy_queue.add_image(image);
+    release_palette_objects(*current_texture);
 
     // manually initialize the image
     image.width = width;
@@ -425,6 +596,8 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
         .sharingMode = vk::SharingMode::eExclusive,
         .initialLayout = vk::ImageLayout::eUndefined,
     };
+    if (expand_palette)
+        image_info.usage |= vk::ImageUsageFlagBits::eStorage;
 
     std::tie(image.image, image.allocation) = state.allocator.createImage(image_info, vkutil::vma_auto_alloc);
 
@@ -448,6 +621,103 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
 
     if (!gxm_texture.normalize_mode)
         LOG_ERROR("Unhandled unnormalized texture, please report it to the developers");
+
+    if (expand_palette) {
+        current_texture->gpu_palette = true;
+        // Compute writes the output; skip the usual transfer-destination setup.
+        image.layout = vkutil::ImageLayout::Undefined;
+
+        // Each dispatch writes one mip through a separate storage-image view.
+        current_texture->mip_views.resize(mip_count);
+        for (uint32_t mip = 0; mip < mip_count; mip++) {
+            view_info.viewType = vk::ImageViewType::e2D;
+            view_info.components = vkutil::default_comp_mapping;
+            view_info.subresourceRange.baseMipLevel = mip;
+            view_info.subresourceRange.levelCount = 1;
+            current_texture->mip_views[mip] = state.device.createImageView(view_info);
+        }
+
+        vkutil::Image &indices = current_texture->indices;
+        indices.width = width;
+        indices.height = height;
+        indices.format = vk::Format::eR8Uint;
+        indices.layout = vkutil::ImageLayout::Undefined;
+        image_info.format = vk::Format::eR8Uint;
+        image_info.usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
+        std::tie(indices.image, indices.allocation) = state.allocator.createImage(image_info, vkutil::vma_auto_alloc);
+        const vk::ImageViewCreateInfo indices_view_info{
+            .image = indices.image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = vk::Format::eR8Uint,
+            .components = vkutil::default_comp_mapping,
+            .subresourceRange = range
+        };
+        indices.view = state.device.createImageView(indices_view_info);
+
+        const std::array<vk::DescriptorPoolSize, 3> pool_sizes{
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eCombinedImageSampler,
+                .descriptorCount = mip_count },
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eUniformBuffer,
+                .descriptorCount = mip_count },
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eStorageImage,
+                .descriptorCount = mip_count },
+        };
+        vk::DescriptorPoolCreateInfo pool_info{
+            .maxSets = mip_count,
+        };
+        pool_info.setPoolSizes(pool_sizes);
+        current_texture->palette_pool = state.device.createDescriptorPool(pool_info);
+
+        const std::vector<vk::DescriptorSetLayout> set_layouts(mip_count, palette_set_layout);
+        vk::DescriptorSetAllocateInfo set_info{
+            .descriptorPool = current_texture->palette_pool,
+        };
+        set_info.setSetLayouts(set_layouts);
+        current_texture->palette_sets = state.device.allocateDescriptorSets(set_info);
+
+        const vk::DescriptorImageInfo indices_info{
+            .sampler = palette_sampler,
+            .imageView = indices.view,
+            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+        };
+        const vk::DescriptorBufferInfo palette_info{
+            .buffer = palette_buffer.buffer,
+            .offset = 0,
+            .range = palette_buffer.size,
+        };
+        for (uint32_t mip = 0; mip < mip_count; mip++) {
+            const vk::DescriptorImageInfo mip_info{
+                .imageView = current_texture->mip_views[mip],
+                .imageLayout = vk::ImageLayout::eGeneral,
+            };
+            std::array<vk::WriteDescriptorSet, 3> writes{
+                vk::WriteDescriptorSet{
+                    .dstSet = current_texture->palette_sets[mip],
+                    .dstBinding = 0,
+                    .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                },
+                vk::WriteDescriptorSet{
+                    .dstSet = current_texture->palette_sets[mip],
+                    .dstBinding = 1,
+                    .descriptorType = vk::DescriptorType::eUniformBuffer,
+                },
+                vk::WriteDescriptorSet{
+                    .dstSet = current_texture->palette_sets[mip],
+                    .dstBinding = 2,
+                    .descriptorType = vk::DescriptorType::eStorageImage,
+                },
+            };
+            writes[0].setImageInfo(indices_info);
+            writes[1].setBufferInfo(palette_info);
+            writes[2].setImageInfo(mip_info);
+            state.device.updateDescriptorSets(writes, {});
+        }
+
+        return;
+    }
 
     prepare_staging_buffer(true);
 }
@@ -479,7 +749,7 @@ void VKTextureCache::upload_texture_impl(SceGxmTextureBaseFormat base_format, ui
     if (!is_texture_transfer_ready)
         prepare_staging_buffer();
 
-    vkutil::Image &image = current_texture->texture;
+    vkutil::Image &image = upload_target();
     TextureStagingBuffer &staging_buffer = staging_buffers[staging_idx];
 
     if (face > 0)
@@ -553,6 +823,77 @@ void VKTextureCache::upload_done() {
     is_texture_transfer_ready = false;
 }
 
+void VKTextureCache::upload_paletted_texture(const SceGxmTexture &gxm_texture, MemState &mem, bool upload_indices) {
+    VKContext *context = reinterpret_cast<VKContext *>(state.context);
+    TextureCacheEntry &entry = *current_texture;
+
+    const vk::ImageSubresourceRange all_mips{
+        .aspectMask = vk::ImageAspectFlagBits::eColor,
+        .baseMipLevel = 0,
+        .levelCount = entry.mip_count,
+        .baseArrayLayer = 0,
+        .layerCount = 1
+    };
+
+    if (upload_indices) {
+        // Reuse layout conversion while retaining indices for later palette-only updates.
+        uploading_indices = true;
+        upload_palette_indices = true;
+        upload_texture(gxm_texture, mem);
+        upload_palette_indices = false;
+        uploading_indices = false;
+
+        if (is_texture_transfer_ready) {
+            vkutil::transition_image_layout(cmd_buffer, entry.indices.image, vkutil::ImageLayout::TransferDst, vkutil::ImageLayout::SampledImage, all_mips);
+            entry.indices.layout = vkutil::ImageLayout::SampledImage;
+        }
+        cmd_buffer = nullptr;
+        is_texture_transfer_ready = false;
+    }
+
+    if (entry.indices.layout != vkutil::ImageLayout::SampledImage)
+        // A failed pixel read leaves no indices to expand.
+        return;
+
+    // Expansion must finish before the scene samples the output.
+    const vk::CommandBuffer cmd = context->prerender_cmd;
+
+    // Finish previous reads before overwriting the shared palette buffer.
+    vk::BufferMemoryBarrier palette_barrier{
+        .srcAccessMask = vk::AccessFlagBits::eUniformRead,
+        .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = palette_buffer.buffer,
+        .offset = 0,
+        .size = palette_buffer.size
+    };
+    cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), {}, palette_barrier, {});
+    // updateBuffer captures the palette now, so later guest writes cannot affect this expansion.
+    cmd.updateBuffer(palette_buffer.buffer, 0, palette_buffer.size, renderer::texture::get_texture_palette(gxm_texture, mem));
+    palette_barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    palette_barrier.dstAccessMask = vk::AccessFlagBits::eUniformRead;
+    cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::DependencyFlags(), {}, palette_barrier, {});
+
+    // Every mip is fully overwritten, so its previous contents can be discarded.
+    vkutil::transition_image_layout_discard(cmd, entry.texture.image, vkutil::ImageLayout::SampledImage, vkutil::ImageLayout::StorageImage, all_mips);
+
+    cmd.bindPipeline(vk::PipelineBindPoint::eCompute, palette_pipeline);
+    for (uint32_t mip = 0; mip < entry.mip_count; mip++) {
+        const uint32_t mip_width = std::max(entry.texture.width >> mip, 1U);
+        const uint32_t mip_height = std::max(entry.texture.height >> mip, 1U);
+        const int32_t mip_level = static_cast<int32_t>(mip);
+
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, palette_pipeline_layout, 0, entry.palette_sets[mip], {});
+        cmd.pushConstants(palette_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(int32_t), &mip_level);
+        // Match the shader's 8x8 workgroup size, rounding up for partial groups.
+        cmd.dispatch((mip_width + 7) / 8, (mip_height + 7) / 8, 1);
+    }
+
+    vkutil::transition_image_layout(cmd, entry.texture.image, vkutil::ImageLayout::StorageImage, vkutil::ImageLayout::SampledImage, all_mips);
+    entry.texture.layout = vkutil::ImageLayout::SampledImage;
+}
+
 void VKTextureCache::configure_sampler(size_t index, const SceGxmTexture &texture, bool no_linear) {
     vk::Sampler &sampler = samplers[index];
     if (sampler) {
@@ -620,6 +961,7 @@ void VKTextureCache::import_configure_impl(SceGxmTextureBaseFormat base_format, 
     // because of texture importation, we must be careful when destroying an image
     if (image.image)
         state.frame().destroy_queue.add_image(image);
+    release_palette_objects(*current_texture);
 
     vk::Format vk_format = texture::translate_format(base_format);
     if (is_srgb)
