@@ -118,6 +118,9 @@ internal fun rememberSettingsSearchEntries(
             add(entry(SettingsCategory.Network, R.string.settings_network_http_read_end_attempts, R.string.settings_network_http_read_end_attempts_desc, scope = SettingsScope.Global, keywords = "read end retry http"))
             add(entry(SettingsCategory.Network, R.string.settings_network_http_read_end_sleep, R.string.settings_network_http_read_end_sleep_desc, scope = SettingsScope.Global, keywords = "read end delay http ms"))
             add(entry(SettingsCategory.Network, R.string.settings_network_adhoc_address, R.string.settings_network_adhoc_address_desc, scope = SettingsScope.Global, keywords = "adhoc subnet local address"))
+            add(entry(SettingsCategory.Network, R.string.settings_network_psas_connector_mode, R.string.settings_network_psas_connector_mode_desc, scope = SettingsScope.Global, keywords = "psasbr psas all-stars battle royale matchmaker connector lan p2p loopback"))
+            add(entry(SettingsCategory.Network, R.string.settings_network_p2p_bind_address, R.string.settings_network_p2p_bind_address_desc, scope = SettingsScope.Global, keywords = "console p2p lan bind ip address psasbr"))
+            add(entry(SettingsCategory.Network, R.string.settings_network_p2p_broadcast_forward, R.string.settings_network_p2p_broadcast_forward_desc, scope = SettingsScope.Global, keywords = "console p2p lan broadcast forward connector psasbr"))
         }
         if (!isPerApp) {
             add(entry(SettingsCategory.Debug, R.string.settings_debug_log_imports, R.string.settings_debug_log_imports_desc, scope = SettingsScope.Global, keywords = "import symbols hle"))

@@ -70,6 +70,9 @@ class EmulatorConfig {
     @JvmField var httpReadEndAttempts: Int = 10
     @JvmField var httpReadEndSleepMs: Int = 250
     @JvmField var adhocAddr: Int = 0
+    @JvmField var psasConnectorMode: Boolean = true
+    @JvmField var p2pBindAddress: String = ""
+    @JvmField var p2pBroadcastForward: String = ""
 
     // Debug
     @JvmField var logImports: Boolean = false
@@ -149,6 +152,9 @@ class EmulatorConfig {
         config.httpReadEndAttempts = httpReadEndAttempts
         config.httpReadEndSleepMs = httpReadEndSleepMs
         config.adhocAddr = adhocAddr
+        config.psasConnectorMode = psasConnectorMode
+        config.p2pBindAddress = p2pBindAddress
+        config.p2pBroadcastForward = p2pBroadcastForward
         config.logImports = logImports
         config.logExports = logExports
         config.logActiveShaders = logActiveShaders
@@ -228,6 +234,9 @@ class EmulatorConfig {
             httpReadEndAttempts == other.httpReadEndAttempts &&
             httpReadEndSleepMs == other.httpReadEndSleepMs &&
             adhocAddr == other.adhocAddr &&
+            psasConnectorMode == other.psasConnectorMode &&
+            p2pBindAddress == other.p2pBindAddress &&
+            p2pBroadcastForward == other.p2pBroadcastForward &&
             logImports == other.logImports &&
             logExports == other.logExports &&
             logActiveShaders == other.logActiveShaders &&
@@ -304,6 +313,9 @@ class EmulatorConfig {
         result = 31 * result + httpReadEndAttempts
         result = 31 * result + httpReadEndSleepMs
         result = 31 * result + adhocAddr
+        result = 31 * result + psasConnectorMode.hashCode()
+        result = 31 * result + p2pBindAddress.hashCode()
+        result = 31 * result + p2pBroadcastForward.hashCode()
         result = 31 * result + logImports.hashCode()
         result = 31 * result + logExports.hashCode()
         result = 31 * result + logActiveShaders.hashCode()

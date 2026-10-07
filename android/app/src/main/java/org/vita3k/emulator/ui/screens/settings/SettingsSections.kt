@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.vita3k.emulator.R
@@ -1288,6 +1289,40 @@ private fun NetworkSettingsSection(
                     availableAdhocAddresses.getOrElse(selectedIndex) { availableAdhocAddresses.first() }.second
                 )
             )
+        }
+        if (!isPerApp) {
+            // ASBR connector mode overrides the manual console P2P fields, so they only show while it is off.
+            // Their values are kept and saved either way.
+            val connectorTitle = stringResource(R.string.settings_network_psas_connector_mode)
+            SettingsToggleRow(
+                title = connectorTitle,
+                checked = cfg.psasConnectorMode,
+                onCheckedChange = { onUpdate { psasConnectorMode = it } },
+                help = helpEntry(connectorTitle, stringResource(R.string.settings_network_psas_connector_mode_desc), SettingsScope.Global),
+                onShowHelp = onShowHelp
+            )
+            if (!cfg.psasConnectorMode) {
+                val bindAddressTitle = stringResource(R.string.settings_network_p2p_bind_address)
+                SettingsTextFieldRow(
+                    title = bindAddressTitle,
+                    value = cfg.p2pBindAddress,
+                    onValueChange = { value -> onUpdate { p2pBindAddress = value } },
+                    placeholder = stringResource(R.string.settings_network_p2p_bind_address_placeholder),
+                    keyboardType = KeyboardType.Uri,
+                    help = helpEntry(bindAddressTitle, stringResource(R.string.settings_network_p2p_bind_address_desc), SettingsScope.Global),
+                    onShowHelp = onShowHelp
+                )
+                val broadcastForwardTitle = stringResource(R.string.settings_network_p2p_broadcast_forward)
+                SettingsTextFieldRow(
+                    title = broadcastForwardTitle,
+                    value = cfg.p2pBroadcastForward,
+                    onValueChange = { value -> onUpdate { p2pBroadcastForward = value } },
+                    placeholder = stringResource(R.string.settings_network_p2p_broadcast_forward_placeholder),
+                    keyboardType = KeyboardType.Uri,
+                    help = helpEntry(broadcastForwardTitle, stringResource(R.string.settings_network_p2p_broadcast_forward_desc), SettingsScope.Global),
+                    onShowHelp = onShowHelp
+                )
+            }
         }
     }
 

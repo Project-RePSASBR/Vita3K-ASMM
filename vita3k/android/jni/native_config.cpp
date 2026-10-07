@@ -91,6 +91,9 @@ struct EmulatorConfigFields {
     jfieldID httpReadEndAttempts = nullptr;
     jfieldID httpReadEndSleepMs = nullptr;
     jfieldID adhocAddr = nullptr;
+    jfieldID psasConnectorMode = nullptr;
+    jfieldID p2pBindAddress = nullptr;
+    jfieldID p2pBroadcastForward = nullptr;
     jfieldID logImports = nullptr;
     jfieldID logExports = nullptr;
     jfieldID logActiveShaders = nullptr;
@@ -176,6 +179,9 @@ EmulatorConfigFields resolve_config_fields(JNIEnv *env) {
     fields.httpReadEndAttempts = env->GetFieldID(fields.cls, "httpReadEndAttempts", "I");
     fields.httpReadEndSleepMs = env->GetFieldID(fields.cls, "httpReadEndSleepMs", "I");
     fields.adhocAddr = env->GetFieldID(fields.cls, "adhocAddr", "I");
+    fields.psasConnectorMode = env->GetFieldID(fields.cls, "psasConnectorMode", "Z");
+    fields.p2pBindAddress = env->GetFieldID(fields.cls, "p2pBindAddress", "Ljava/lang/String;");
+    fields.p2pBroadcastForward = env->GetFieldID(fields.cls, "p2pBroadcastForward", "Ljava/lang/String;");
     fields.logImports = env->GetFieldID(fields.cls, "logImports", "Z");
     fields.logExports = env->GetFieldID(fields.cls, "logExports", "Z");
     fields.logActiveShaders = env->GetFieldID(fields.cls, "logActiveShaders", "Z");
@@ -278,6 +284,15 @@ void read_int_array_field(JNIEnv *env, jobject obj, jfieldID field, std::vector<
     for (jsize index = 0; index < length; ++index)
         out_values[static_cast<size_t>(index)] = static_cast<short>(ints[static_cast<size_t>(index)]);
     env->DeleteLocalRef(array);
+}
+
+// Text settings are stored trimmed, like the Qt settings dialog does
+std::string trim_text_setting(const std::string &value) {
+    const auto begin = value.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos)
+        return {};
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(begin, end - begin + 1);
 }
 
 void fill_config_object(JNIEnv *env, jobject obj, const EmulatorConfigFields &fields,
@@ -389,6 +404,17 @@ void fill_config_object(JNIEnv *env, jobject obj, const EmulatorConfigFields &fi
     env->SetIntField(obj, fields.httpReadEndAttempts, static_cast<jint>(config.http_read_end_attempts));
     env->SetIntField(obj, fields.httpReadEndSleepMs, static_cast<jint>(config.http_read_end_sleep_ms));
     env->SetIntField(obj, fields.adhocAddr, static_cast<jint>(config.adhoc_addr));
+    env->SetBooleanField(obj, fields.psasConnectorMode, config.psas_connector_mode);
+    {
+        jstring value = env->NewStringUTF(config.p2p_bind_address.c_str());
+        env->SetObjectField(obj, fields.p2pBindAddress, value);
+        env->DeleteLocalRef(value);
+    }
+    {
+        jstring value = env->NewStringUTF(config.p2p_broadcast_forward.c_str());
+        env->SetObjectField(obj, fields.p2pBroadcastForward, value);
+        env->DeleteLocalRef(value);
+    }
     env->SetBooleanField(obj, fields.logImports, emuenv && emuenv->kernel.debugger.log_imports);
     env->SetBooleanField(obj, fields.logExports, emuenv && emuenv->kernel.debugger.log_exports);
     env->SetBooleanField(obj, fields.logActiveShaders, current_config.log_active_shaders);
@@ -542,6 +568,21 @@ void read_config_object(JNIEnv *env, jobject obj, const EmulatorConfigFields &fi
     config.http_read_end_attempts = static_cast<int>(env->GetIntField(obj, fields.httpReadEndAttempts));
     config.http_read_end_sleep_ms = static_cast<int>(env->GetIntField(obj, fields.httpReadEndSleepMs));
     config.adhoc_addr = static_cast<int>(env->GetIntField(obj, fields.adhocAddr));
+    config.psas_connector_mode = env->GetBooleanField(obj, fields.psasConnectorMode) != JNI_FALSE;
+    {
+        auto *value = reinterpret_cast<jstring>(env->GetObjectField(obj, fields.p2pBindAddress));
+        if (value) {
+            config.p2p_bind_address = trim_text_setting(jstring_to_string(env, value));
+            env->DeleteLocalRef(value);
+        }
+    }
+    {
+        auto *value = reinterpret_cast<jstring>(env->GetObjectField(obj, fields.p2pBroadcastForward));
+        if (value) {
+            config.p2p_broadcast_forward = trim_text_setting(jstring_to_string(env, value));
+            env->DeleteLocalRef(value);
+        }
+    }
     current_config.log_active_shaders = env->GetBooleanField(obj, fields.logActiveShaders) != JNI_FALSE;
     current_config.log_uniforms = env->GetBooleanField(obj, fields.logUniforms) != JNI_FALSE;
     current_config.color_surface_debug = env->GetBooleanField(obj, fields.colorSurfaceDebug) != JNI_FALSE;

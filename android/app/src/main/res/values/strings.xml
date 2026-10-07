@@ -510,6 +510,14 @@
     <string name="settings_network_adhoc_address">Ad-Hoc Address</string>
     <string name="settings_network_adhoc_address_desc">Select the IP address to be used in adhoc networking.</string>
     <string name="settings_network_subnet_mask_value">Subnet Mask: %1$s</string>
+    <string name="settings_network_psas_connector_mode">ASBR connector mode</string>
+    <string name="settings_network_psas_connector_mode_desc">For PlayStation All-Stars Battle Royale (retail title ids PCSF00153, PCSA00069, PCSC00032, PCSD00040) the emulator binds its P2P socket to 127.0.0.1 and forwards its broadcasts to the All-Stars Matchmaker connector on 127.0.0.1:4000, overriding the manual Console P2P bind address and broadcast forward settings (other broadcast forward entries are kept).\nTurn it off only for real-LAN play with consoles without the connector; the two manual Console P2P fields appear when the mode is off.</string>
+    <string name="settings_network_p2p_bind_address">Console P2P Bind Address</string>
+    <string name="settings_network_p2p_bind_address_desc">Only used by games that speak the real console P2P format (PlayStation All-Stars Battle Royale), to play LAN with PS3/PS Vita consoles and RPCS3.\nIP address the shared UDP port 3658 binds to. Leave empty to use all interfaces, or set 127.0.0.1 when a LAN connector (such as All-Stars Matchmaker) runs on this PC. Ignored while ASBR connector mode is on (it binds to 127.0.0.1).</string>
+    <string name="settings_network_p2p_bind_address_placeholder">0.0.0.0</string>
+    <string name="settings_network_p2p_broadcast_forward">Console P2P Broadcast Forward</string>
+    <string name="settings_network_p2p_broadcast_forward_desc">Only used by games that speak the real console P2P format (PlayStation All-Stars Battle Royale).\nComma-separated ip:port endpoints that receive a unicast copy of every broadcast, e.g. 127.0.0.1:4000 for a LAN connector running on this PC. Leave empty to disable. ASBR connector mode always adds 127.0.0.1:4000.</string>
+    <string name="settings_network_p2p_broadcast_forward_placeholder">ip:port,ip:port</string>
 
     <!-- Settings — Controls tab -->
     <string name="settings_controls_show">Show On-Screen Controls</string>
