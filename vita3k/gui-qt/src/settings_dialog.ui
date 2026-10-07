@@ -2788,6 +2788,41 @@ QGroupBox[flat=&quot;true&quot;]::title {
                    <item>
                     <widget class="QComboBox" name="subnet_mask_box"/>
                    </item>
+                   <item>
+                    <widget class="QCheckBox" name="psas_connector_mode">
+                     <property name="text">
+                      <string>ASBR connector mode</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item>
+                    <widget class="QLabel" name="label_p2p_bind_address">
+                     <property name="text">
+                      <string>Console P2P Bind Address</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item>
+                    <widget class="QLineEdit" name="p2p_bind_address">
+                     <property name="placeholderText">
+                      <string>0.0.0.0</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item>
+                    <widget class="QLabel" name="label_p2p_broadcast_forward">
+                     <property name="text">
+                      <string>Console P2P Broadcast Forward</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item>
+                    <widget class="QLineEdit" name="p2p_broadcast_forward">
+                     <property name="placeholderText">
+                      <string>ip:port,ip:port</string>
+                     </property>
+                    </widget>
+                   </item>
                   </layout>
                  </widget>
                 </item>

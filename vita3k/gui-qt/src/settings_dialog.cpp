@@ -533,6 +533,10 @@ void SettingsDialog::load_config() {
     m_ui->http_read_end_sleep->setValue(emuenv.cfg.http_read_end_sleep_ms);
     update_http_retry_labels();
     populate_adhoc_list();
+    m_ui->psas_connector_mode->setChecked(emuenv.cfg.psas_connector_mode);
+    m_ui->p2p_bind_address->setText(QString::fromStdString(emuenv.cfg.p2p_bind_address));
+    m_ui->p2p_broadcast_forward->setText(QString::fromStdString(emuenv.cfg.p2p_broadcast_forward));
+    update_p2p_fields_visibility();
 
     m_ui->show_welcome->setChecked(emuenv.cfg.show_welcome);
     m_ui->warn_missing_firmware->setChecked(emuenv.cfg.warn_missing_firmware);
@@ -694,6 +698,9 @@ void SettingsDialog::build_desired_config(Config &desired) const {
     desired.http_read_end_attempts = m_ui->http_read_end_attempts->value();
     desired.http_read_end_sleep_ms = m_ui->http_read_end_sleep->value();
     desired.adhoc_addr = m_ui->adhoc_address_box->currentIndex();
+    desired.psas_connector_mode = m_ui->psas_connector_mode->isChecked();
+    desired.p2p_bind_address = m_ui->p2p_bind_address->text().trimmed().toStdString();
+    desired.p2p_broadcast_forward = m_ui->p2p_broadcast_forward->text().trimmed().toStdString();
     desired.show_welcome = m_ui->show_welcome->isChecked();
     desired.warn_missing_firmware = m_ui->warn_missing_firmware->isChecked();
     desired.user_lang = m_ui->ui_language_box->currentData().toString().toStdString();
@@ -982,6 +989,16 @@ void SettingsDialog::update_http_retry_labels() {
         tr("Read End Sleep: %1 ms").arg(m_ui->http_read_end_sleep->value()));
 }
 
+void SettingsDialog::update_p2p_fields_visibility() {
+    // ASBR connector mode overrides the manual console P2P fields, so they only show while it is off.
+    // Their values are kept and saved either way.
+    const bool manual = !m_ui->psas_connector_mode->isChecked();
+    m_ui->label_p2p_bind_address->setVisible(manual);
+    m_ui->p2p_bind_address->setVisible(manual);
+    m_ui->label_p2p_broadcast_forward->setVisible(manual);
+    m_ui->p2p_broadcast_forward->setVisible(manual);
+}
+
 void SettingsDialog::setup_connections() {
     for (auto *bb : m_button_boxes) {
         connect(bb->button(QDialogButtonBox::Save), &QPushButton::clicked,
@@ -1039,6 +1056,9 @@ void SettingsDialog::setup_connections() {
         m_ui->label_perf_position->setEnabled(on);
         m_ui->perf_overlay_position_box->setEnabled(on);
     });
+
+    connect(m_ui->psas_connector_mode, &QCheckBox::toggled,
+        this, &SettingsDialog::update_p2p_fields_visibility);
 
     connect(m_ui->file_loading_delay, &QSlider::valueChanged,
         this, &SettingsDialog::update_file_loading_delay_label);
@@ -1280,6 +1300,11 @@ void SettingsDialog::setup_connections() {
         { m_ui->label_read_end_sleep, tr("Read End Sleep"), m_tooltips->http_read_end_sleep },
         { m_ui->http_read_end_sleep, tr("Read End Sleep"), m_tooltips->http_read_end_sleep },
         { m_ui->adhoc_address_box, tr("Ad-Hoc Address"), m_tooltips->adhoc_address },
+        { m_ui->psas_connector_mode, tr("ASBR connector mode"), m_tooltips->psas_connector_mode },
+        { m_ui->label_p2p_bind_address, tr("Console P2P Bind Address"), m_tooltips->p2p_bind_address },
+        { m_ui->p2p_bind_address, tr("Console P2P Bind Address"), m_tooltips->p2p_bind_address },
+        { m_ui->label_p2p_broadcast_forward, tr("Console P2P Broadcast Forward"), m_tooltips->p2p_broadcast_forward },
+        { m_ui->p2p_broadcast_forward, tr("Console P2P Broadcast Forward"), m_tooltips->p2p_broadcast_forward },
         // Debug
         { m_ui->log_imports, tr("Import Logging"), m_tooltips->log_imports },
         { m_ui->log_exports, tr("Export Logging"), m_tooltips->log_exports },

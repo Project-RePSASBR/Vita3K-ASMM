@@ -105,6 +105,7 @@ private:
     void update_modules_list_enabled();
     void update_file_loading_delay_label();
     void update_http_retry_labels();
+    void update_p2p_fields_visibility();
     void mark_dirty();
     void set_pending_vita_fs_path(const fs::path &vita_fs_path);
     void set_description(QWidget *tab, const QString &title, const QString &text);

@@ -17,6 +17,11 @@
 
 #pragma once
 
+struct EmuEnvState;
 struct NetState;
 
 bool init(NetState &state);
+
+// Starts the ASBR connector hello when the running title is a retail PlayStation All-Stars Battle Royale id,
+// whether connector mode is on or off (see net/psas_connector.h). NetState::deinit stops it.
+void psas_start_hello(EmuEnvState &emuenv);

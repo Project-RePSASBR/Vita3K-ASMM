@@ -257,6 +257,7 @@ static void adhoc_thread(EmuEnvState &emuenv, int thread_id) {
             std::lock_guard<std::mutex> lock(emuenv.netctl.mutex);
             net_utils::init_address(emuenv.cfg.adhoc_addr, emuenv.net.netAddr, emuenv.net.broadcastAddr);
             emuenv.net.current_addr_index = emuenv.cfg.adhoc_addr;
+            emuenv.net.apply_p2p_address_override();
         }
 
         const SceNetSockaddrIn to{
@@ -574,7 +575,17 @@ EXPORT(int, sceNetCtlInetGetInfo, int code, SceNetCtlInfo *info) {
         return RET_ERROR(SCE_NET_CTL_ERROR_INVALID_ADDR);
     }
 
-    const auto addr = net_utils::get_selected_assigned_addr(emuenv.cfg.adhoc_addr);
+    auto addr = net_utils::get_selected_assigned_addr(emuenv.cfg.adhoc_addr);
+
+    // Console P2P sockets bound to a specific address (e.g. loopback for a LAN connector) report it as the
+    // console's own address, so what the game advertises matches where its traffic comes from
+    if (emuenv.net.console_p2p && emuenv.net.p2p && emuenv.net.p2p->bind_addr) {
+        char ip[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &emuenv.net.p2p->bind_addr, ip, sizeof(ip));
+        addr.addr = ip;
+        if ((ntohl(emuenv.net.p2p->bind_addr) >> 24) == 127)
+            addr.netMask = "255.0.0.0";
+    }
 
     switch (code) {
     case SCE_NETCTL_INFO_GET_DEVICE:

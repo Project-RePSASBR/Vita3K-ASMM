@@ -18,6 +18,8 @@
 #pragma once
 
 #include <net/epoll.h>
+#include <net/p2pmux.h>
+#include <net/psas_connector.h>
 #include <net/socket.h>
 #include <net/types.h>
 
@@ -42,7 +44,14 @@ struct NetState {
     int current_addr_index = 0;
     uint32_t broadcastAddr = 0xFFFFFFFF;
     uint32_t netAddr = 0xFFFFFFFF;
+    // DGRAM_P2P sockets use the console wire format (shared UDP port + vport header) instead of port + vport
+    bool console_p2p = false;
+    P2PContextPtr p2p;
+    // ASBR connector hello, sent while a retail PlayStation All-Stars Battle Royale title runs
+    std::unique_ptr<PsasHelloSender> psas_hello;
 
+    // Makes the reported addresses match the console P2P bind address, if one is set
+    void apply_p2p_address_override();
     void abort_all();
     void deinit();
 };

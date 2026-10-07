@@ -27,6 +27,7 @@
 #include <io/state.h>
 #include <kernel/state.h>
 #include <motion/state.h>
+#include <net/functions.h>
 #include <renderer/functions.h>
 #include <util/log.h>
 
@@ -120,6 +121,10 @@ bool AppSessionController::load_and_run() {
 
     emuenv.renderer->set_app(emuenv.io.title_id.c_str(), emuenv.self_name.c_str());
     prepare_game_launch_overlay(emuenv);
+
+    // ASBR connector hello for the retail PlayStation All-Stars Battle Royale titles (nothing for other titles).
+    // Started before the game threads so sceNetInit finds it; shutdown_app_runtime stops it through NetState::deinit.
+    psas_start_hello(emuenv);
 
     if (run_app(emuenv, main_module_id, active_launch_request) != Success)
         return false;

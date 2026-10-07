@@ -205,6 +205,9 @@ using PhysicalKeyCode = input::PhysicalKeyCode;
     code(int, "http-read-end-attempts", 10, http_read_end_attempts)                                     \
     code(int, "http-read-end-sleep-ms", 250, http_read_end_sleep_ms)                                    \
     code(int, "adhoc-addr", 0, adhoc_addr)                                                              \
+    code(std::string, "p2p-bind-address", std::string{}, p2p_bind_address)                              \
+    code(std::string, "p2p-broadcast-forward", std::string{}, p2p_broadcast_forward)                    \
+    code(bool, "psas-connector-mode", true, psas_connector_mode)                                        \
     code(int, "front-camera-type", 2, front_camera_type)                                                \
     code(std::string, "front-camera-id", std::string{}, front_camera_id)                                \
     code(std::string, "front-camera-image", std::string{}, front_camera_image)                          \

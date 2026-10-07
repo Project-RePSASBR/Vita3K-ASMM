@@ -94,6 +94,9 @@ public:
     QString http_read_end_attempts;
     QString http_read_end_sleep;
     QString adhoc_address;
+    QString psas_connector_mode;
+    QString p2p_bind_address;
+    QString p2p_broadcast_forward;
     QString log_imports;
     QString log_exports;
     QString log_active_shaders;

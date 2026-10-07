@@ -17,6 +17,7 @@
 
 #include "SceNet.h"
 
+#include <io/state.h>
 #include <kernel/state.h>
 
 #include <net/state.h>
@@ -24,8 +25,11 @@
 #include <util/lock_and_find.h>
 #include <util/net_utils.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
+#include <string_view>
 #include <thread>
 
 #ifdef __APPLE__
@@ -468,6 +472,12 @@ EXPORT(int, sceNetInetPton, int af, const char *src, void *dst) {
     RET_NET_ERRNO(res == 0 ? SCE_NET_ERROR_EINVAL : PosixSocket::translate_return_value(res));
 }
 
+// Titles whose P2P traffic must use the real console wire format, to play with PS3/PS Vita consoles and RPCS3:
+// the retail PlayStation All-Stars Battle Royale ids (EU, US, JP, Asia), listed once in net/psas_connector.cpp
+static bool uses_console_p2p(const std::string &title_id) {
+    return psas_is_retail_title(title_id);
+}
+
 EXPORT(int, sceNetInit, SceNetInitParam *param) {
     TRACY_FUNC(sceNetInit, param);
     if (emuenv.net.inited)
@@ -486,6 +496,24 @@ EXPORT(int, sceNetInit, SceNetInitParam *param) {
     emuenv.net.resolver_id = ++emuenv.net.next_id;
     net_utils::init_address(emuenv.cfg.adhoc_addr, emuenv.net.netAddr, emuenv.net.broadcastAddr);
     emuenv.net.current_addr_index = emuenv.cfg.adhoc_addr;
+
+    emuenv.net.console_p2p = uses_console_p2p(emuenv.io.title_id);
+    if (emuenv.net.console_p2p) {
+        // The settings are read once per emulation, sockets from a previous sceNetInit may still use them
+        if (!emuenv.net.p2p) {
+            // ASBR connector mode overrides the bind address and adds the connector to the broadcast forward list
+            const auto settings = psas_resolve_p2p_settings(emuenv);
+            emuenv.net.p2p = std::make_shared<P2PContext>();
+            emuenv.net.p2p->bind_addr = settings.bind_addr;
+            emuenv.net.p2p->broadcast_forward = settings.broadcast_forward;
+            if (settings.connector_mode)
+                LOG_INFO("ASBR connector mode: console P2P forced to bind 127.0.0.1 and to forward broadcasts to 127.0.0.1:{} (configured bind address '{}' ignored, broadcast forward '{}' kept); disable it in Settings > Network for LAN play without the connector", PSAS_CONNECTOR_PORT, emuenv.cfg.p2p_bind_address, emuenv.cfg.p2p_broadcast_forward);
+            if (emuenv.net.psas_hello)
+                emuenv.net.psas_hello->watch(emuenv.net.p2p);
+        }
+        LOG_INFO("Console P2P mode enabled for {} (bind address: '{}', broadcast forward: '{}')", emuenv.io.title_id, emuenv.cfg.p2p_bind_address, emuenv.cfg.p2p_broadcast_forward);
+    }
+    emuenv.net.apply_p2p_address_override();
     return 0;
 }
 
@@ -609,6 +637,9 @@ EXPORT(int, sceNetSendto, int sid, const void *msg, unsigned int len, int flags,
     if (!sock)
         RET_NET_ERRNO(SCE_NET_ERROR_EBADF);
 
+    if (!to)
+        RET_NET_ERRNO(sock->send_packet(msg, len, flags, nullptr, tolen));
+
     SceNetSockaddrIn to_in;
     std::memcpy(&to_in, to, sizeof(SceNetSockaddrIn));
     if (!sock->sockopt_so_onesbcast && (to_in.sin_addr.s_addr == INADDR_BROADCAST))
@@ -662,7 +693,13 @@ EXPORT(int, sceNetSocket, const char *name, int domain, SceNetSocketType type, S
     TRACY_FUNC(sceNetSocket, name, domain, type, protocol);
     bool isP2P = (type == SCE_NET_SOCK_DGRAM_P2P || type == SCE_NET_SOCK_STREAM_P2P);
 
-    SocketPtr sock = isP2P ? std::make_shared<P2PSocket>(domain, type, protocol) : std::make_shared<PosixSocket>(domain, type, protocol);
+    SocketPtr sock;
+    if (emuenv.net.console_p2p && emuenv.net.p2p && (type == SCE_NET_SOCK_DGRAM_P2P))
+        sock = std::make_shared<P2PMuxSocket>(emuenv.net.p2p, domain, type, protocol);
+    else if (isP2P)
+        sock = std::make_shared<P2PSocket>(domain, type, protocol);
+    else
+        sock = std::make_shared<PosixSocket>(domain, type, protocol);
 
     auto id = ++emuenv.net.next_id;
     emuenv.net.socks.emplace(id, sock);
@@ -700,6 +737,9 @@ EXPORT(int, sceNetTerm) {
     if (!emuenv.net.inited) {
         RET_NET_ERRNO(SCE_NET_ERROR_ENOTINIT);
     }
+    // Release the shared console P2P ports before Winsock goes away; a later sceNetInit reopens them
+    if (emuenv.net.p2p)
+        emuenv.net.p2p->shutdown();
 #ifdef _WIN32
     WSACleanup();
 #endif

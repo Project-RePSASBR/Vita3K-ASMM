@@ -21,17 +21,40 @@
 #include <WinSock2.h>
 #endif
 
+void NetState::apply_p2p_address_override() {
+    if (!console_p2p || !p2p)
+        return;
+
+    if (p2p->bind_addr != 0) {
+        netAddr = p2p->bind_addr;
+        // A loopback bind can't reach a subnet broadcast, only the limited broadcast address
+        if ((ntohl(p2p->bind_addr) >> 24) == 127)
+            broadcastAddr = INADDR_BROADCAST;
+    }
+    p2p->broadcast_addr = broadcastAddr;
+}
+
 void NetState::abort_all() {
     for (auto &[id, sock] : socks)
         sock->abort(SCE_NET_SOCKET_ABORT_FLAG_RCV_PRESERVATION | SCE_NET_SOCKET_ABORT_FLAG_SND_PRESERVATION);
+    for (auto &[id, epoll] : epolls)
+        epoll->aborted = true;
 }
 
 void NetState::deinit() {
+    // Joins the hello thread, before the console P2P context goes away
+    psas_hello.reset();
+
     for (auto &[id, sock] : socks) {
         sock->close();
     }
     socks.clear();
     epolls.clear();
+    if (p2p) {
+        p2p->shutdown();
+        p2p.reset();
+    }
+    console_p2p = false;
 
 #ifdef _WIN32
     if (inited)
