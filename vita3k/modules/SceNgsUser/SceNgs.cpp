@@ -19,6 +19,7 @@
 
 #include "../SceProcessmgr/SceProcessmgr.h"
 
+#include <ngs/modules/envelope.h>
 #include <ngs/state.h>
 #include <ngs/system.h>
 #include <util/log.h>
@@ -843,6 +844,14 @@ EXPORT(SceInt32, sceNgsVoiceInit, ngs::Voice *voice, const SceNgsVoicePreset *pr
     return SCE_NGS_OK;
 }
 
+// The voice has a configured envelope module: a key-off becomes its release (envelope release).
+static bool ngs_voice_has_envelope_release(const MemState &mem, ngs::Voice *voice) {
+    for (size_t i = 0; i < voice->rack->modules.size() && i < voice->datas.size(); i++)
+        if (voice->rack->modules[i] && voice->rack->modules[i]->module_id() == 0x5CE3 && ngs::EnvelopeModule::handles_key_off(mem, voice->datas[i]))
+            return true;
+    return false;
+}
+
 EXPORT(SceInt32, sceNgsVoiceKeyOff, ngs::Voice *voice) {
     TRACY_FUNC(sceNgsVoiceKeyOff, voice);
     if (!emuenv.cfg.current_config.ngs_enable) {
@@ -853,10 +862,20 @@ EXPORT(SceInt32, sceNgsVoiceKeyOff, ngs::Voice *voice) {
         return RET_ERROR(SCE_NGS_ERROR_INVALID_ARG);
     }
 
+    // envelope release: the voice keeps rendering while its envelope fades out over the release time
+    // (0 ms = silent at the next update); the scheduler then reports it finished and stops it. The game sees
+    // FINALIZING | KEY_OFF meanwhile. The key-off flag is raised after the transition: the player modules
+    // rewind to their start buffer on a state change while it is set.
+    if (voice->state == ngs::VoiceState::VOICE_STATE_ACTIVE && !voice->is_paused && ngs_voice_has_envelope_release(emuenv.mem, voice)) {
+        voice->rack->system->voice_scheduler.off(emuenv.mem, voice);
+        voice->is_keyed_off = true;
+        return SCE_NGS_OK;
+    }
+
     voice->is_keyed_off = true;
     voice->rack->system->voice_scheduler.off(emuenv.mem, voice);
 
-    // call the finish callback, I got no idea what the module id should be in this case
+    // no envelope to release: finish at once (the finished callback's module id is unknown in this case)
     voice->invoke_callback(emuenv.kernel, emuenv.mem, thread_id, voice->finished_callback, voice->finished_callback_user_data, 0);
 
     voice->is_keyed_off = false;

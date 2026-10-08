@@ -153,13 +153,15 @@ static Ret apply_definition(BussType type, Arg &arg) {
     case BussType::BUSS_SCREAM:
         // the module name were obtained from uncharted error strings
         // I guess the scream modules are the same as the usual ones
+        // PlayStation All-Stars writes pauser parameters (0x01015CE5) to the last slot, so it holds a pauser
+        // rather than a second filter (found while adding the envelope release)
         return apply_definition_with_modules<
             PlayerModule,
             EnvelopeModule, // SCE_NGS_SCREAM_VOICE_ENVELOPE
             DistortionModule, // SCE_NGS_SCREAM_VOICE_DISTORTION
             EqualizerModule, // SCE_NGS_SCREAM_VOICE_EQ
             FilterModule, // SCE_NGS_SCREAM_VOICE_SEND_1_FILTER
-            FilterModule>(arg); // SCE_NGS_SCREAM_VOICE_SEND_2_FILTER
+            PauserModule>(arg); // SCE_NGS_SCREAM_VOICE_PAUSER
     case BussType::BUSS_SCREAM_ATRAC9:
         return apply_definition_with_modules<
             Atrac9Module,
@@ -167,7 +169,7 @@ static Ret apply_definition(BussType type, Arg &arg) {
             DistortionModule, // SCE_NGS_SCREAM_VOICE_DISTORTION
             EqualizerModule, // SCE_NGS_SCREAM_VOICE_EQ
             FilterModule, // SCE_NGS_SCREAM_VOICE_SEND_1_FILTER
-            FilterModule>(arg); // SCE_NGS_SCREAM_VOICE_SEND_2_FILTER
+            PauserModule>(arg); // SCE_NGS_SCREAM_VOICE_PAUSER
     case BussType::BUSS_NORMAL_PLAYER:
         return apply_definition_with_modules<
             PlayerModule,

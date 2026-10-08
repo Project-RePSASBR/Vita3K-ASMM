@@ -109,6 +109,7 @@ bool VoiceScheduler::stop(const MemState &mem, Voice *voice) {
         deque_voice(voice);
 
     voice->is_paused = false;
+    voice->is_keyed_off = false; // envelope release over, killed or finished: the next play starts clean
 
     return true;
 }
@@ -145,8 +146,9 @@ void VoiceScheduler::update(KernelState &kern, const MemState &mem, const SceUID
         for (size_t i = 0; i < voice->rack->modules.size(); i++) {
             if (voice->rack->modules[i]) {
                 if (voice->rack->modules[i]->process(kern, mem, thread_id, voice->datas[i], scheduler_lock, voice_lock)) {
+                    if (!finished)
+                        finished_module = voice->rack->modules[i]->module_id();
                     finished = true;
-                    finished_module = voice->rack->modules[i]->module_id();
                 }
             }
         }
