@@ -1,6 +1,6 @@
 <resources>
     <!-- App name -->
-    <string name="app_name">Vita3K</string>
+    <string name="app_name">Vita3K ASMM</string>
 
     <!-- Common actions -->
     <string name="action_ok">OK</string>
@@ -38,7 +38,7 @@
     <string name="app_action_reset_last_played">Reset Last Played</string>
 
     <!-- Apps list screen -->
-    <string name="apps_list_app_title">Vita3K</string>
+    <string name="apps_list_app_title">Vita3K ASMM</string>
     <plurals name="apps_list_n_selected">
         <item quantity="one">%1$d selected</item>
         <item quantity="other">%1$d selected</item>

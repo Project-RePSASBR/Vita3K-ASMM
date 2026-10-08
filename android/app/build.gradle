@@ -19,7 +19,7 @@ android {
 	}
 
 	defaultConfig {
-		applicationId = "org.vita3k.emulator"
+		applicationId = "org.vita3k.emulator.asmm"
 		minSdk = 28
 		targetSdk = 35
 		versionCode = 21
