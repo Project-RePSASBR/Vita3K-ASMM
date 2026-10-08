@@ -47,6 +47,7 @@ public:
     SceInt32 wait_or_poll(const ThreadStatePtr &thread, SceUInt32 wait_pattern, SceUInt32 *result_pattern, SceUInt64 *user_data, SceUInt32 *timeout, bool is_wait, bool callbacks);
     SceInt32 set_or_pulse(SceUInt32 set_pattern, SceUInt64 user_data, bool is_set);
     SceInt32 clear(SceUInt32 clear_pattern);
+    SceInt32 cancel(SceUInt32 *num_wait_threads);
 
     struct WaitEntry {
         SceUInt32 pattern;
@@ -58,6 +59,9 @@ public:
     WaitQueue<WaitEntry> waiters;
     SceUInt32 pattern;
     SceUInt64 last_user_data = 0;
+
+private:
+    void on_delete() override;
 };
 
 typedef std::shared_ptr<SimpleEvent> SimpleEventPtr;
@@ -71,6 +75,7 @@ public:
     SceInt32 clear();
     SceInt32 start();
     SceInt32 stop();
+    SceInt32 cancel(SceUInt32 *num_wait_threads);
 
     // Only the first waiter waits for the next event, the others wait for their turn
     WaitQueue<std::monostate> waiters;
@@ -84,6 +89,7 @@ public:
     uint64_t event_interval = 0;
 
 private:
+    void on_delete() override;
     void schedule_event();
 };
 
@@ -106,6 +112,9 @@ public:
     const int max;
     WaitQueue<WaitEntry> waiters;
     int val;
+
+private:
+    void on_delete() override;
 };
 
 typedef std::shared_ptr<Semaphore> SemaphorePtr;
@@ -118,6 +127,7 @@ public:
 
     SceInt32 acquire(MemState &mem, const ThreadStatePtr &thread, int count, SceUInt32 *timeout, bool only_try, WaitTarget target, bool callbacks);
     SceInt32 release(const ThreadStatePtr &thread, int unlock_count);
+    SceInt32 cancel(const ThreadStatePtr &thread, int new_count, SceUInt32 *num_wait_threads);
 
     struct WaitEntry {
         int32_t lock_count;
@@ -130,6 +140,7 @@ public:
     ThreadStatePtr owner;
 
 private:
+    void on_delete() override;
     bool lightweight() const { return get_uid_class() == UidClass::lw_mutex; }
 };
 
@@ -157,6 +168,7 @@ public:
 
     SceInt32 acquire(const ThreadStatePtr &thread, bool is_write, SceUInt32 *timeout, bool callbacks);
     SceInt32 release(const ThreadStatePtr &thread);
+    SceInt32 cancel(const ThreadStatePtr &thread, SceUInt32 *num_read_wait_threads, SceUInt32 *num_write_wait_threads, SceInt32 flag);
 
     struct WaitEntry {
         bool is_write;
@@ -166,6 +178,9 @@ public:
     // the int value is the lock count for recursive locks
     std::map<ThreadStatePtr, int> owners;
     WaitQueue<WaitEntry> waiters;
+
+private:
+    void on_delete() override;
 };
 
 typedef std::shared_ptr<RWLock> RWLockPtr;
@@ -187,6 +202,9 @@ public:
 
     WaitQueue<WaitEntry> waiters;
     SceUInt32 flags;
+
+private:
+    void on_delete() override;
 };
 
 typedef std::shared_ptr<EventFlag> EventFlagPtr;
@@ -219,6 +237,7 @@ public:
     WaitQueue<std::monostate> waiters;
 
 private:
+    void on_delete() override;
     bool lightweight() const { return get_uid_class() == UidClass::lw_cond; }
 };
 
@@ -240,6 +259,7 @@ public:
 
     SceSize receive(const ThreadStatePtr &thread, SceUInt32 wait_mode, void *buf, SceSize size, SceUInt32 *timeout, bool callbacks);
     SceSize send(const ThreadStatePtr &thread, SceUInt32 wait_mode, const void *buf, SceSize size, SceUInt32 *timeout, bool callbacks);
+    SceInt32 cancel(SceUInt32 *num_send_wait_threads, SceUInt32 *num_receive_wait_threads);
 
 private:
     struct WaitEntry {

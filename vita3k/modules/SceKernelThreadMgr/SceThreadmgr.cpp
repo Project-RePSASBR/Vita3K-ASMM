@@ -64,9 +64,17 @@ EXPORT(int, __sceKernelCreateLwMutex, Ptr<SceKernelLwMutexWork> workarea, const 
     return SCE_KERNEL_OK;
 }
 
-EXPORT(int, _sceKernelCancelEvent) {
-    TRACY_FUNC(_sceKernelCancelEvent);
-    return UNIMPLEMENTED();
+EXPORT(SceInt32, _sceKernelCancelEvent, SceUID eventId, SceUInt32 *pNumWaitThreads) {
+    TRACY_FUNC(_sceKernelCancelEvent, eventId, pNumWaitThreads);
+    if (const SimpleEventPtr event = emuenv.kernel.objects.find<SimpleEvent>(eventId))
+        return event->cancel(pNumWaitThreads);
+    // this may also be a timer event
+    if (const TimerPtr timer = emuenv.kernel.objects.find<Timer>(eventId)) {
+        const SceInt32 result = timer->cancel(pNumWaitThreads);
+        // Deleted since the lookup, reported like the other event functions do
+        return result == SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID ? SCE_KERNEL_ERROR_UNKNOWN_EVENT_ID : result;
+    }
+    return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_EVENT_ID);
 }
 
 EXPORT(SceInt32, _sceKernelCancelEventFlag, SceUID event_id, SceUInt pattern, SceUInt32 *num_wait_thread) {
@@ -82,19 +90,28 @@ EXPORT(int, _sceKernelCancelEventWithSetPattern) {
     return UNIMPLEMENTED();
 }
 
-EXPORT(int, _sceKernelCancelMsgPipe) {
-    TRACY_FUNC(_sceKernelCancelMsgPipe);
-    return UNIMPLEMENTED();
+EXPORT(SceInt32, _sceKernelCancelMsgPipe, SceUID msgPipeId, SceUInt32 *pNumSendWaitThreads, SceUInt32 *pNumReceiveWaitThreads) {
+    TRACY_FUNC(_sceKernelCancelMsgPipe, msgPipeId, pNumSendWaitThreads, pNumReceiveWaitThreads);
+    const MsgPipePtr msgpipe = emuenv.kernel.objects.find<MsgPipe>(msgPipeId);
+    if (!msgpipe)
+        return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_MSG_PIPE_ID);
+    return msgpipe->cancel(pNumSendWaitThreads, pNumReceiveWaitThreads);
 }
 
-EXPORT(int, _sceKernelCancelMutex) {
-    TRACY_FUNC(_sceKernelCancelMutex);
-    return UNIMPLEMENTED();
+EXPORT(SceInt32, _sceKernelCancelMutex, SceUID mutexId, SceInt32 newCount, SceUInt32 *pNumWaitThreads) {
+    TRACY_FUNC(_sceKernelCancelMutex, mutexId, newCount, pNumWaitThreads);
+    const MutexPtr mutex = emuenv.kernel.objects.find<HeavyMutex>(mutexId);
+    if (!mutex)
+        return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID);
+    return mutex->cancel(emuenv.kernel.get_thread(thread_id), newCount, pNumWaitThreads);
 }
 
-EXPORT(int, _sceKernelCancelRWLock) {
-    TRACY_FUNC(_sceKernelCancelRWLock);
-    return UNIMPLEMENTED();
+EXPORT(SceInt32, _sceKernelCancelRWLock, SceUID rwLockId, SceUInt32 *pNumReadWaitThreads, SceUInt32 *pNumWriteWaitThreads, SceInt32 flag) {
+    TRACY_FUNC(_sceKernelCancelRWLock, rwLockId, pNumReadWaitThreads, pNumWriteWaitThreads, flag);
+    const RWLockPtr rwlock = emuenv.kernel.objects.find<RWLock>(rwLockId);
+    if (!rwlock)
+        return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID);
+    return rwlock->cancel(emuenv.kernel.get_thread(thread_id), pNumReadWaitThreads, pNumWriteWaitThreads, flag);
 }
 
 EXPORT(int, _sceKernelCancelSema, SceUID semaId, SceInt32 setCount, SceUInt32 *pNumWaitThreads) {
@@ -105,9 +122,12 @@ EXPORT(int, _sceKernelCancelSema, SceUID semaId, SceInt32 setCount, SceUInt32 *p
     return semaphore->cancel(setCount, pNumWaitThreads);
 }
 
-EXPORT(int, _sceKernelCancelTimer) {
-    TRACY_FUNC(_sceKernelCancelTimer);
-    return UNIMPLEMENTED();
+EXPORT(SceInt32, _sceKernelCancelTimer, SceUID timerId, SceUInt32 *pNumWaitThreads) {
+    TRACY_FUNC(_sceKernelCancelTimer, timerId, pNumWaitThreads);
+    const TimerPtr timer = emuenv.kernel.objects.find<Timer>(timerId);
+    if (!timer)
+        return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID);
+    return timer->cancel(pNumWaitThreads);
 }
 
 EXPORT(SceUID, _sceKernelCreateCond, const char *pName, SceUInt32 attr, SceUID mutexId, const SceKernelCondOptParam *pOptParam) {
@@ -205,19 +225,8 @@ EXPORT(int, _sceKernelDeleteLwCond, Ptr<SceKernelLwCondWork> workarea) {
     TRACY_FUNC(_sceKernelDeleteLwCond, workarea);
     SceUID lightweight_condition_id = workarea.get(emuenv.mem)->uid;
 
-    const CondvarPtr condvar = emuenv.kernel.objects.find<LwCond>(lightweight_condition_id);
-    if (!condvar)
+    if (!emuenv.kernel.objects.remove<LwCond>(lightweight_condition_id))
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_LW_COND_ID);
-
-    {
-        const auto guard = condvar->lock();
-        if (guard && !condvar->waiters.empty()) {
-            // TODO:
-            LOG_WARN("Can't delete sync object, it has waiting threads.");
-            return SCE_KERNEL_OK;
-        }
-    }
-    emuenv.kernel.objects.remove<LwCond>(lightweight_condition_id);
 
     return SCE_KERNEL_OK;
 }
@@ -229,19 +238,8 @@ EXPORT(int, _sceKernelDeleteLwMutex, Ptr<SceKernelLwMutexWork> workarea) {
 
     const auto lightweight_mutex_id = workarea.get(emuenv.mem)->uid;
 
-    const MutexPtr mutex = emuenv.kernel.objects.find<LwMutex>(lightweight_mutex_id);
-    if (!mutex)
+    if (!emuenv.kernel.objects.remove<LwMutex>(lightweight_mutex_id))
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_LW_MUTEX_ID);
-
-    {
-        const auto guard = mutex->lock();
-        if (guard && !mutex->waiters.empty()) {
-            // TODO:
-            LOG_WARN("Can't delete sync object, it has waiting threads.");
-            return SCE_KERNEL_OK;
-        }
-    }
-    emuenv.kernel.objects.remove<LwMutex>(lightweight_mutex_id);
 
     return SCE_KERNEL_OK;
 }
@@ -1229,38 +1227,16 @@ EXPORT(int, sceKernelDeleteCallback, SceUID callbackId) {
 
 EXPORT(int, sceKernelDeleteCond, SceUID condition_variable_id) {
     TRACY_FUNC(sceKernelDeleteCond, condition_variable_id);
-    const CondvarPtr condvar = emuenv.kernel.objects.find<HeavyCond>(condition_variable_id);
-    if (!condvar)
+    if (!emuenv.kernel.objects.remove<HeavyCond>(condition_variable_id))
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_COND_ID);
-
-    {
-        const auto guard = condvar->lock();
-        if (guard && !condvar->waiters.empty()) {
-            // TODO:
-            LOG_WARN("Can't delete sync object, it has waiting threads.");
-            return SCE_KERNEL_OK;
-        }
-    }
-    emuenv.kernel.objects.remove<HeavyCond>(condition_variable_id);
 
     return SCE_KERNEL_OK;
 }
 
 EXPORT(int, sceKernelDeleteEventFlag, SceUID event_id) {
     TRACY_FUNC(sceKernelDeleteEventFlag, event_id);
-    const EventFlagPtr event = emuenv.kernel.objects.find<EventFlag>(event_id);
-    if (!event)
+    if (!emuenv.kernel.objects.remove<EventFlag>(event_id))
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_EVF_ID);
-
-    {
-        const auto guard = event->lock();
-        if (guard && !event->waiters.empty()) {
-            // TODO:
-            LOG_WARN("Can't delete sync object, it has waiting threads.");
-            return SCE_KERNEL_OK;
-        }
-    }
-    emuenv.kernel.objects.remove<EventFlag>(event_id);
 
     return SCE_KERNEL_OK;
 }
@@ -1275,76 +1251,32 @@ EXPORT(SceInt32, sceKernelDeleteMsgPipe, SceUID msgPipeId) {
 
 EXPORT(int, sceKernelDeleteMutex, SceUID mutexid) {
     TRACY_FUNC(sceKernelDeleteMutex, mutexid);
-    const MutexPtr mutex = emuenv.kernel.objects.find<HeavyMutex>(mutexid);
-    if (!mutex)
+    if (!emuenv.kernel.objects.remove<HeavyMutex>(mutexid))
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID);
-
-    {
-        const auto guard = mutex->lock();
-        if (guard && !mutex->waiters.empty()) {
-            // TODO:
-            LOG_WARN("Can't delete sync object, it has waiting threads.");
-            return SCE_KERNEL_OK;
-        }
-    }
-    emuenv.kernel.objects.remove<HeavyMutex>(mutexid);
 
     return SCE_KERNEL_OK;
 }
 
 EXPORT(SceInt32, sceKernelDeleteRWLock, SceUID lock_id) {
     TRACY_FUNC(sceKernelDeleteRWLock, lock_id);
-    const RWLockPtr rwlock = emuenv.kernel.objects.find<RWLock>(lock_id);
-    if (!rwlock)
+    if (!emuenv.kernel.objects.remove<RWLock>(lock_id))
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID);
-
-    {
-        const auto guard = rwlock->lock();
-        if (guard && !rwlock->waiters.empty()) {
-            // TODO:
-            LOG_WARN("Can't delete sync object, it has waiting threads.");
-            return SCE_KERNEL_OK;
-        }
-    }
-    emuenv.kernel.objects.remove<RWLock>(lock_id);
 
     return SCE_KERNEL_OK;
 }
 
 EXPORT(int, sceKernelDeleteSema, SceUID semaid) {
     TRACY_FUNC(sceKernelDeleteSema, semaid);
-    const SemaphorePtr semaphore = emuenv.kernel.objects.find<Semaphore>(semaid);
-    if (!semaphore)
+    if (!emuenv.kernel.objects.remove<Semaphore>(semaid))
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID);
-
-    {
-        const auto guard = semaphore->lock();
-        if (guard && !semaphore->waiters.empty()) {
-            // TODO:
-            LOG_WARN("Can't delete sync object, it has waiting threads.");
-            return SCE_KERNEL_OK;
-        }
-    }
-    emuenv.kernel.objects.remove<Semaphore>(semaid);
 
     return SCE_KERNEL_OK;
 }
 
 EXPORT(int, sceKernelDeleteSimpleEvent, SceUID event_id) {
     TRACY_FUNC(sceKernelDeleteSimpleEvent, event_id);
-    const SimpleEventPtr event = emuenv.kernel.objects.find<SimpleEvent>(event_id);
-    if (!event)
+    if (!emuenv.kernel.objects.remove<SimpleEvent>(event_id))
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_EVENT_ID);
-
-    {
-        const auto guard = event->lock();
-        if (guard && !event->waiters.empty()) {
-            // TODO:
-            LOG_WARN("Can't delete sync object, it has waiting threads.");
-            return SCE_KERNEL_OK;
-        }
-    }
-    emuenv.kernel.objects.remove<SimpleEvent>(event_id);
 
     return SCE_KERNEL_OK;
 }
@@ -1361,9 +1293,10 @@ EXPORT(int, sceKernelDeleteThread, SceUID thid) {
 
 EXPORT(int, sceKernelDeleteTimer, SceUID timer_handle) {
     TRACY_FUNC(sceKernelDeleteTimer, timer_handle);
-    emuenv.kernel.objects.remove<Timer>(timer_handle);
+    if (!emuenv.kernel.objects.remove<Timer>(timer_handle))
+        return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID);
 
-    return 0;
+    return SCE_KERNEL_OK;
 }
 
 EXPORT(int, sceKernelExitDeleteThread, int status) {

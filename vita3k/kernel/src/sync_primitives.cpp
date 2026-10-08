@@ -44,6 +44,10 @@ SimpleEvent::SimpleEvent(SceUInt32 attr, const char *name, SceUInt32 init_patter
     , waiters(attr)
     , pattern(init_pattern) {}
 
+void SimpleEvent::on_delete() {
+    waiters.wake_all(SCE_KERNEL_ERROR_WAIT_DELETE);
+}
+
 SceInt32 SimpleEvent::wait_or_poll(const ThreadStatePtr &thread, SceUInt32 wait_pattern, SceUInt32 *result_pattern, SceUInt64 *user_data, SceUInt32 *timeout, bool is_wait, bool callbacks) {
     auto guard = lock();
     if (!guard)
@@ -128,6 +132,18 @@ SceInt32 SimpleEvent::clear(SceUInt32 clear_pattern) {
     return SCE_KERNEL_OK;
 }
 
+SceInt32 SimpleEvent::cancel(SceUInt32 *num_wait_threads) {
+    const auto guard = lock();
+    if (!guard)
+        return SCE_KERNEL_ERROR_UNKNOWN_EVENT_ID;
+
+    const auto nb_threads = static_cast<SceUInt32>(waiters.wake_all(SCE_KERNEL_ERROR_WAIT_CANCEL));
+    if (num_wait_threads)
+        *num_wait_threads = nb_threads;
+
+    return SCE_KERNEL_OK;
+}
+
 // *********
 // * Timer *
 // *********
@@ -141,6 +157,10 @@ inline uint64_t get_current_time() {
 Timer::Timer(SceUInt32 attr, const char *name)
     : WithUidClass(attr, name)
     , waiters(attr) {}
+
+void Timer::on_delete() {
+    waiters.wake_all(SCE_KERNEL_ERROR_WAIT_DELETE);
+}
 
 void Timer::schedule_event() {
     next_event = get_current_time() + event_interval;
@@ -207,6 +227,9 @@ SceInt32 Timer::wait_or_poll(const ThreadStatePtr &thread, SceUInt32 *result_pat
         waiters.push(waiter);
 
         while (true) {
+            // A waker ended the wait, such as a delete
+            if (waiter.result)
+                return *waiter.result;
             // only the first waiter waits for the event, the others wait until they are first
             const bool is_first = waiters.front() == &waiter;
             Deadline deadline = Deadline::max();
@@ -281,6 +304,23 @@ SceInt32 Timer::stop() {
     return static_cast<int>(was_stopped);
 }
 
+SceInt32 Timer::cancel(SceUInt32 *num_wait_threads) {
+    const auto guard = lock();
+    if (!guard)
+        return SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID;
+
+    const auto nb_threads = static_cast<SceUInt32>(waiters.wake_all(SCE_KERNEL_ERROR_WAIT_CANCEL));
+    // The event set with sceKernelSetTimerEvent is canceled too
+    is_repeat = false;
+    is_pulse = false;
+    event_interval = 0;
+    next_event = std::numeric_limits<uint64_t>::max();
+    if (num_wait_threads)
+        *num_wait_threads = nb_threads;
+
+    return SCE_KERNEL_OK;
+}
+
 // *********
 // * Mutex *
 // *********
@@ -301,6 +341,11 @@ SceInt32 Mutex::check_create(const char *name, SceUInt32 attr, int init_count) {
     if (init_count > 1 && (attr & SCE_KERNEL_MUTEX_ATTR_RECURSIVE))
         return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     return SCE_KERNEL_OK;
+}
+
+void Mutex::on_delete() {
+    waiters.wake_all(SCE_KERNEL_ERROR_WAIT_DELETE);
+    owner = nullptr;
 }
 
 SceInt32 Mutex::acquire(MemState &mem, const ThreadStatePtr &thread, int count, SceUInt32 *timeout, bool only_try, WaitTarget target, bool callbacks) {
@@ -341,11 +386,10 @@ SceInt32 Mutex::acquire(MemState &mem, const ThreadStatePtr &thread, int count, 
         const WaitResult r = waiters.wait(guard, thread, target, { count }, deadline, callbacks);
         writeback_timeout(timeout, deadline);
 
-        if (lightweight()) {
+        // A deleted mutex has no owner, and its work area may be freed already
+        if (lightweight() && owner == thread) {
             workarea.get(mem)->lockCount = lock_count;
-            if (owner == thread) {
-                workarea.get(mem)->owner = thread->id;
-            }
+            workarea.get(mem)->owner = thread->id;
         }
 
         return guest_result(r);
@@ -392,6 +436,26 @@ SceInt32 Mutex::release(const ThreadStatePtr &thread, int unlock_count) {
     return SCE_KERNEL_OK;
 }
 
+SceInt32 Mutex::cancel(const ThreadStatePtr &thread, int new_count, SceUInt32 *num_wait_threads) {
+    const auto guard = lock();
+    if (!guard)
+        return lightweight() ? SCE_KERNEL_ERROR_UNKNOWN_LW_MUTEX_ID : SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID;
+
+    // -1 restores the lock count the mutex was created with
+    if (new_count == -1)
+        new_count = init_count;
+    if (new_count < 0 || (new_count > 1 && !(attr & SCE_KERNEL_MUTEX_ATTR_RECURSIVE)))
+        return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+
+    const auto nb_threads = static_cast<SceUInt32>(waiters.wake_all(SCE_KERNEL_ERROR_WAIT_CANCEL));
+    lock_count = new_count;
+    owner = new_count > 0 ? thread : nullptr;
+    if (num_wait_threads)
+        *num_wait_threads = nb_threads;
+
+    return SCE_KERNEL_OK;
+}
+
 // **************
 // * RWLock *
 // **************
@@ -399,6 +463,10 @@ SceInt32 Mutex::release(const ThreadStatePtr &thread, int unlock_count) {
 RWLock::RWLock(SceUInt32 attr, const char *name)
     : WithUidClass(attr, name)
     , waiters(attr) {}
+
+void RWLock::on_delete() {
+    waiters.wake_all(SCE_KERNEL_ERROR_WAIT_DELETE);
+}
 
 SceInt32 RWLock::acquire(const ThreadStatePtr &thread, bool is_write, SceUInt32 *timeout, bool callbacks) {
     auto guard = lock();
@@ -479,6 +547,32 @@ SceInt32 RWLock::release(const ThreadStatePtr &thread) {
     return SCE_KERNEL_OK;
 }
 
+SceInt32 RWLock::cancel(const ThreadStatePtr &thread, SceUInt32 *num_read_wait_threads, SceUInt32 *num_write_wait_threads, SceInt32 flag) {
+    const auto guard = lock();
+    if (!guard)
+        return SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID;
+
+    const auto is_writer = [](auto &waiter) { return waiter.entry.is_write; };
+    const auto nb_writers = static_cast<SceUInt32>(waiters.wake_if(is_writer, SCE_KERNEL_ERROR_WAIT_CANCEL));
+    const auto nb_readers = static_cast<SceUInt32>(waiters.wake_all(SCE_KERNEL_ERROR_WAIT_CANCEL));
+
+    // The lock is reset, and only the calling thread may hold it afterwards
+    owners.clear();
+    if (flag & SCE_KERNEL_RW_LOCK_CANCEL_WITH_WRITE_LOCK) {
+        owners.emplace(thread, 1);
+        state = RWLockState::WriteLocked;
+    } else {
+        state = RWLockState::Unlocked;
+    }
+
+    if (num_read_wait_threads)
+        *num_read_wait_threads = nb_readers;
+    if (num_write_wait_threads)
+        *num_write_wait_threads = nb_writers;
+
+    return SCE_KERNEL_OK;
+}
+
 // **************
 // * Semaphore *
 // **************
@@ -489,6 +583,10 @@ Semaphore::Semaphore(SceUInt32 attr, const char *name, int init_val, int max_val
     , max(max_val)
     , waiters(attr)
     , val(init_val) {}
+
+void Semaphore::on_delete() {
+    waiters.wake_all(SCE_KERNEL_ERROR_WAIT_DELETE);
+}
 
 SceInt32 Semaphore::wait(const ThreadStatePtr &thread, SceInt32 need_count, SceUInt32 *timeout, bool callbacks) {
     auto guard = lock();
@@ -547,11 +645,10 @@ SceInt32 Semaphore::cancel(SceInt32 set_count, SceUInt32 *num_wait_threads) {
     if (!guard)
         return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
 
-    const auto nb_threads = static_cast<SceUInt32>(waiters.wake_all(SCE_KERNEL_ERROR_WAIT_CANCEL));
-
-    if (val < set_count) {
+    if (set_count > max)
         return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
-    }
+
+    const auto nb_threads = static_cast<SceUInt32>(waiters.wake_all(SCE_KERNEL_ERROR_WAIT_CANCEL));
     if (set_count < 0) {
         val = init_val;
     } else {
@@ -571,6 +668,10 @@ Condvar::Condvar(SceUInt32 attr, const char *name, MutexPtr associated_mutex)
     , associated_mutex(std::move(associated_mutex))
     , waiters(attr) {}
 
+void Condvar::on_delete() {
+    waiters.wake_all(lightweight() ? SCE_KERNEL_ERROR_WAIT_DELETE_LW_COND : SCE_KERNEL_ERROR_WAIT_DELETE_COND);
+}
+
 SceInt32 Condvar::wait(MemState &mem, const ThreadStatePtr &thread, SceUInt32 *timeout, bool callbacks) {
     auto guard = lock();
     if (!guard)
@@ -587,7 +688,14 @@ SceInt32 Condvar::wait(MemState &mem, const ThreadStatePtr &thread, SceUInt32 *t
 
     guard.unlock();
     // Taking the mutex back is still part of the condition variable wait
-    return associated_mutex->acquire(mem, thread, 1, timeout, false, { lightweight() ? SCE_KERNEL_WAITTYPE_LW_COND_LW_MUTEX : SCE_KERNEL_WAITTYPE_COND_MUTEX, uid }, callbacks);
+    const SceInt32 result = associated_mutex->acquire(mem, thread, 1, timeout, false, { lightweight() ? SCE_KERNEL_WAITTYPE_LW_COND_LW_MUTEX : SCE_KERNEL_WAITTYPE_COND_MUTEX, uid }, callbacks);
+    // Report a wait ended by the mutex with the mutex error codes
+    if (result == SCE_KERNEL_ERROR_WAIT_DELETE)
+        return lightweight() ? SCE_KERNEL_ERROR_WAIT_DELETE_LW_MUTEX : SCE_KERNEL_ERROR_WAIT_DELETE_MUTEX;
+    // only heavy mutexes can be canceled
+    if (result == SCE_KERNEL_ERROR_WAIT_CANCEL)
+        return SCE_KERNEL_ERROR_WAIT_CANCEL_MUTEX;
+    return result;
 }
 
 SceInt32 Condvar::signal(SignalTarget target) {
@@ -618,6 +726,10 @@ EventFlag::EventFlag(SceUInt32 attr, const char *name, SceUInt32 init_pattern)
     : WithUidClass(attr, name)
     , waiters(attr)
     , flags(init_pattern) {}
+
+void EventFlag::on_delete() {
+    waiters.wake_all(SCE_KERNEL_ERROR_WAIT_DELETE);
+}
 
 SceInt32 EventFlag::wait_or_poll(const ThreadStatePtr &thread, SceUInt32 pattern, SceUInt32 wait_mode, SceUInt32 *out_bits, SceUInt32 *timeout, bool is_wait, bool callbacks) {
     auto guard = lock();
@@ -654,8 +766,8 @@ SceInt32 EventFlag::wait_or_poll(const ThreadStatePtr &thread, SceUInt32 pattern
         const WaitResult r = waiters.wait(guard, thread, { SCE_KERNEL_WAITTYPE_EVENTFLAG, uid }, { wait_mode, pattern, out_bits }, deadline, callbacks);
         writeback_timeout(timeout, deadline);
         const SceInt32 err = guest_result(r);
-        if (err == SCE_KERNEL_ERROR_WAIT_TIMEOUT && out_bits) {
-            // set it only if a timeout occurs
+        if ((err == SCE_KERNEL_ERROR_WAIT_TIMEOUT || err == SCE_KERNEL_ERROR_WAIT_DELETE) && out_bits) {
+            // set it only on a timeout or a delete
             // otherwise set in set or cancel
             *out_bits = flags;
         }
@@ -836,4 +948,21 @@ SceSize MsgPipe::send(const ThreadStatePtr &thread, SceUInt32 wait_mode, const v
     const SceSize copied_size = (SceSize)data_buffer.Insert(buf, size);
     wake_waiter(receivers, data_buffer.Used());
     return copied_size;
+}
+
+SceInt32 MsgPipe::cancel(SceUInt32 *num_send_wait_threads, SceUInt32 *num_receive_wait_threads) {
+    const auto guard = lock();
+    if (!guard)
+        return SCE_KERNEL_ERROR_UNKNOWN_MSG_PIPE_ID;
+
+    const auto nb_senders = static_cast<SceUInt32>(senders.wake_all(SCE_KERNEL_ERROR_WAIT_CANCEL));
+    const auto nb_receivers = static_cast<SceUInt32>(receivers.wake_all(SCE_KERNEL_ERROR_WAIT_CANCEL));
+    data_buffer.Clear();
+
+    if (num_send_wait_threads)
+        *num_send_wait_threads = nb_senders;
+    if (num_receive_wait_threads)
+        *num_receive_wait_threads = nb_receivers;
+
+    return SCE_KERNEL_OK;
 }
