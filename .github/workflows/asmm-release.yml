@@ -151,13 +151,19 @@ jobs:
 
       - name: Check the Android package and its signing key
         run: |
+          set -o pipefail
+
           apk=$(echo release/*-android.apk)
-          build_tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          # The newest stable build-tools (preview folders such as 37.0.0-rc1 are skipped)
+          build_tools="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | grep -E '^[0-9]+(\.[0-9]+)*$' | sort -V | tail -n 1)"
+          echo "Build tools: ${build_tools}"
 
           package=$("$build_tools/aapt2" dump packagename "$apk")
-          cert=$("$build_tools/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
-
           echo "Package: ${package}"
+
+          # The whole report goes to the log: certificate digests are public
+          "$build_tools/apksigner" verify --print-certs "$apk" | tee apksigner.txt
+          cert=$(grep -oiE 'certificate SHA-256 digest: [0-9a-f]{64}' apksigner.txt | head -n 1 | awk '{ print tolower($NF) }' || true)
           echo "Signing certificate SHA-256: ${cert}"
 
           if [ "$package" != "$ASMM_APK_PACKAGE" ]; then
