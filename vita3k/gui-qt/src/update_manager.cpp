@@ -85,9 +85,9 @@ QString asmm_asset_suffix() {
 #elif defined(__APPLE__)
     return QStringLiteral("-macos-x64.dmg");
 #elif defined(__linux__) && defined(__aarch64__)
-    return QStringLiteral("-aarch64.AppImage");
+    return QStringLiteral("-linux-arm64.AppImage");
 #elif defined(__linux__)
-    return QStringLiteral("-x86_64.AppImage");
+    return QStringLiteral("-linux-x64.AppImage");
 #else
     return {};
 #endif

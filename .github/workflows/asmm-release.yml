@@ -132,17 +132,12 @@ jobs:
           copy_as 'artifacts/vita3k-*-android/app.apk' "${prefix}-android.apk"
 
           # The AppImages keep the names they were built with: their .zsync update files refer to them by name
-          for arch in x86_64 aarch64; do
-            case "$arch" in
-              x86_64)  platform=linux-x64 ;;
-              aarch64) platform=linux-arm64 ;;
-            esac
+          for platform in linux-x64 linux-arm64; do
+            appimage=$(only "artifacts/vita3k-*-${platform}/Vita3K-ASMM-*-${platform}.AppImage")
+            zsync=$(only "artifacts/vita3k-*-${platform}/Vita3K-ASMM-*-${platform}.AppImage.zsync")
 
-            appimage=$(only "artifacts/vita3k-*-${platform}/Vita3K-ASMM-*-${arch}.AppImage")
-            zsync=$(only "artifacts/vita3k-*-${platform}/Vita3K-ASMM-*-${arch}.AppImage.zsync")
-
-            if [ "$(basename "$appimage")" != "${prefix}-${arch}.AppImage" ]; then
-              echo "::error::Unexpected AppImage name $(basename "$appimage"), expected ${prefix}-${arch}.AppImage"
+            if [ "$(basename "$appimage")" != "${prefix}-${platform}.AppImage" ]; then
+              echo "::error::Unexpected AppImage name $(basename "$appimage"), expected ${prefix}-${platform}.AppImage"
               exit 1
             fi
 
@@ -191,10 +186,10 @@ jobs:
                 */SHA256SUMS.txt)         continue ;;
                 *-windows-x64.zip)        label='Windows x64' ;;
                 *-windows-arm64.zip)      label='Windows ARM64' ;;
-                *-x86_64.AppImage)        label='Linux x64 (AppImage)' ;;
-                *-aarch64.AppImage)       label='Linux ARM64 (AppImage)' ;;
-                *-x86_64.AppImage.zsync)  label='Linux x64 (AppImage update data)' ;;
-                *-aarch64.AppImage.zsync) label='Linux ARM64 (AppImage update data)' ;;
+                *-linux-x64.AppImage)     label='Linux x64 (AppImage)' ;;
+                *-linux-arm64.AppImage)   label='Linux ARM64 (AppImage)' ;;
+                *-linux-x64.AppImage.zsync)   label='Linux x64 (AppImage update data)' ;;
+                *-linux-arm64.AppImage.zsync) label='Linux ARM64 (AppImage update data)' ;;
                 *-linux-x64.zip)          label='Linux x64 (zip)' ;;
                 *-linux-arm64.zip)        label='Linux ARM64 (zip)' ;;
                 *-macos-x64.dmg)          label='MacOS Intel' ;;

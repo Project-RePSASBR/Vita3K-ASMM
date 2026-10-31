@@ -114,14 +114,19 @@ export ARCH
 export OUTPATH="$OUTPUT_DIR"
 export ADD_HOOKS="self-updater.hook"
 # ASMM fork: self-update from the fork's latest published release, never from upstream's continuous build
-export UPINFO="gh-releases-zsync|Project-RePSASBR|Vita3K-ASMM|latest|Vita3K-ASMM-*-$ARCH.AppImage.zsync"
+# ASMM fork: release files are named by platform like the zips (linux-x64 / linux-arm64), so the assets sort by OS
+case $ARCH in
+    x86_64) ASMM_PLATFORM="linux-x64" ;;
+    aarch64) ASMM_PLATFORM="linux-arm64" ;;
+esac
+export UPINFO="gh-releases-zsync|Project-RePSASBR|Vita3K-ASMM|latest|Vita3K-ASMM-*-$ASMM_PLATFORM.AppImage.zsync"
 export ICON="$INSTALL_PREFIX/share/icons/hicolor/scalable/apps/org.vita3k.vita3k.svg"
 export DESKTOP="$INSTALL_PREFIX/share/applications/org.vita3k.vita3k.desktop"
 export DEPLOY_OPENGL=1
 export DEPLOY_VULKAN=1
 export DEPLOY_PULSE=1
 # ASMM fork: the release name as built, since the .zsync refers to the AppImage by this file name
-export OUTNAME="Vita3K-ASMM-$(git rev-parse --short=8 HEAD)-$ARCH.AppImage"
+export OUTNAME="Vita3K-ASMM-$(git rev-parse --short=8 HEAD)-$ASMM_PLATFORM.AppImage"
 
 
 DEBLOATED_PACKAGES_URL="https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/get-debloated-pkgs.sh"
