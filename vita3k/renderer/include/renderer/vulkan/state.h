@@ -81,6 +81,10 @@ struct VKState : public renderer::State {
     vk::Queue general_queue;
     vk::Queue transfer_queue;
 
+    // general_queue and transfer_queue currently resolve to the same VkQueue.
+    // Vulkan requires external synchronization for host access to that queue.
+    std::mutex queue_mutex;
+
     // These might be merged into one queue, but for now they are different.
     vk::CommandPool general_command_pool;
     // Transfer pool has transient bit set.
@@ -115,6 +119,7 @@ struct VKState : public renderer::State {
     // support for the VK_KHR_uniform_buffer_standard_layout extension, needed for memory mapping and texture viewport
     bool support_standard_layout = false;
     bool support_rasterized_order_access = false;
+    bool support_native_rgba4_surface = false;
     LinuxSurfaceType linux_surface_type = LinuxSurfaceType::Unknown;
 
 #ifdef __ANDROID__

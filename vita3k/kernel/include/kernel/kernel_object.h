@@ -51,7 +51,9 @@ public:
 
     SceUID uid{};
 
-    // Locks the object, which guards its fields. The lock is empty if the object was deleted.
+protected:
+    // Locks the object, which guards its fields. The lock is empty if the object was deleted. Only
+    // the object's own methods take it.
     [[nodiscard]] std::unique_lock<std::mutex> lock() const {
         std::unique_lock<std::mutex> guard(mutex);
         if (deleted)
@@ -59,19 +61,21 @@ public:
         return guard;
     }
 
-protected:
-    // Ends what the object is doing when it is deleted. Runs once, with the lock held.
-    virtual void on_delete() {}
+    // Ends what the object is doing when the thread deleter deletes it. Runs once, with the lock held.
+    virtual void on_delete(SceUID deleter) {}
+
+    // Whether the object was deleted. With the lock held.
+    bool was_deleted() const { return deleted; }
 
 private:
     friend class KernelObjects;
 
-    // Marks the object deleted and runs on_delete().
-    void mark_deleted() {
+    // Marks the object deleted by the thread deleter and runs on_delete().
+    void mark_deleted(SceUID deleter) {
         const std::lock_guard<std::mutex> guard(mutex);
         assert(!deleted);
         deleted = true;
-        on_delete();
+        on_delete(deleter);
     }
 
     mutable std::mutex mutex;
@@ -120,9 +124,10 @@ public:
         return std::static_pointer_cast<T>(it->second);
     }
 
-    // Removes the T with this UID and marks it deleted. Returns false if there is none.
+    // Removes the T with this UID, so no later lookup finds it, then marks it deleted by the thread
+    // deleter. Returns false if there is none.
     template <KernelObjectClass T>
-    bool remove(SceUID uid) {
+    bool remove(SceUID uid, SceUID deleter) {
         std::shared_ptr<KernelObject> obj;
         {
             const std::lock_guard<std::mutex> lock(mutex);
@@ -132,7 +137,7 @@ public:
             obj = std::move(objects.extract(it).mapped());
         }
         // Without the table lock, so lookups never wait for on_delete()
-        obj->mark_deleted();
+        obj->mark_deleted(deleter);
         return true;
     }
 
@@ -150,15 +155,14 @@ public:
         return nullptr;
     }
 
-    // Calls fn on every T, in UID order, with the table and the object locked.
+    // Calls fn on every T, in UID order, with the table locked. No T is deleted meanwhile, and fn
+    // locks the ones it reads.
     template <KernelObjectClass T>
     void for_each(std::invocable<T &> auto fn) const {
         const std::lock_guard<std::mutex> lock(mutex);
         for (const auto &[_, obj] : objects) {
-            if (obj->get_uid_class() != T::uid_class)
-                continue;
-            const std::lock_guard<std::mutex> obj_lock(obj->mutex);
-            fn(static_cast<T &>(*obj));
+            if (obj->get_uid_class() == T::uid_class)
+                fn(static_cast<T &>(*obj));
         }
     }
 

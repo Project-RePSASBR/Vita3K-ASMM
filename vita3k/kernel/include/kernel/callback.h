@@ -24,8 +24,10 @@
 #include <string>
 
 struct ThreadState;
-typedef std::shared_ptr<ThreadState> ThreadStatePtr;
+using ThreadStatePtr = std::shared_ptr<ThreadState>;
 
+// Lock order: a callback's lock, then its owner thread's mutex. Code that holds a thread's mutex
+// must not take the lock of a callback.
 class Callback final : public WithUidClass<KernelObject, UidClass::callback> {
 public:
     // What the callback function receives about the notifications since it last ran
@@ -62,8 +64,8 @@ public:
 
 private:
     // Drops the pending notifications, so the callback never runs again
-    void on_delete() override;
-    // Clears the notifications. The lock must be held.
+    void on_delete(SceUID deleter) override;
+    // Clears the notifications and tells the owner if there were any. The lock must be held.
     void reset();
 
     const std::weak_ptr<ThreadState> owner; // Thread that created this callback, woken when it is notified
@@ -73,4 +75,4 @@ private:
     SceUID notifier_id = SCE_UID_INVALID_UID; // UID of the last event that notified this thread - SCE_UID_INVALID_UID if not an event
 };
 
-typedef std::shared_ptr<Callback> CallbackPtr;
+using CallbackPtr = std::shared_ptr<Callback>;

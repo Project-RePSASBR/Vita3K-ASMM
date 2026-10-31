@@ -24,4 +24,4 @@ private:
     int wait_with_p2p(SceNetEpollEvent *events, int maxevents, int timeout);
 };
 
-typedef std::shared_ptr<Epoll> EpollPtr;
+using EpollPtr = std::shared_ptr<Epoll>;

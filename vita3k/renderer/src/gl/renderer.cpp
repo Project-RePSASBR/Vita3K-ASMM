@@ -233,11 +233,15 @@ bool create(std::unique_ptr<State> &state, const Config &config) {
         LOG_WARN("Consider updating your graphics drivers or upgrading your GPU.");
     }
 
-    // always enabled in the opengl renderer
 #ifdef __ANDROID__
     gl_state.features.use_mask_bit = false;
 #else
-    gl_state.features.use_mask_bit = true;
+    // Some AMD integrated GPUs return zero from imageLoad() on the mask texture after
+    // sync_mask() cleared it with glClearTexImage (fast clear metadata is not resolved
+    // for read-only image bindings), which turns the whole frame black.
+    gl_state.features.use_mask_bit = !config.current_config.disable_mask_bit;
+    if (config.current_config.disable_mask_bit)
+        LOG_WARN("Mask bit emulation is disabled by the settings");
 #endif
 
     return gl_state.init();
@@ -515,7 +519,7 @@ static void post_process_pixels_data(GLState &renderer, std::uint32_t *pixels, s
                 const size_t first_pixel_offset_in_linear = (j * stride) + hori_tile * 32;
 
                 memcpy(buffer.data() + first_pixel_offset_in_tile * bytes_per_pixel,
-                    (const char *)(pixels) + first_pixel_offset_in_linear * bytes_per_pixel, 32 * bytes_per_pixel);
+                    reinterpret_cast<const char *>(pixels) + first_pixel_offset_in_linear * bytes_per_pixel, 32 * bytes_per_pixel);
             }
         }
         memcpy(pixels, buffer.data(), buffer.size());

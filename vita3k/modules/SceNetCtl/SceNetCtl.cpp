@@ -316,14 +316,9 @@ static void adhoc_thread(EmuEnvState &emuenv, int thread_id) {
         uint64_t lastSendTicks = rtc_get_ticks(emuenv.kernel.base_tick.tick) - emuenv.kernel.start_tick - SEND_INTERVAL_USEC;
         while (emuenv.netctl.adhocCondVarReady.load()) {
             const uint64_t currentTicks = rtc_get_ticks(emuenv.kernel.base_tick.tick) - emuenv.kernel.start_tick;
-            emuenv.netctl.adhocPeers.erase(
-                std::remove_if(
-                    emuenv.netctl.adhocPeers.begin(),
-                    emuenv.netctl.adhocPeers.end(),
-                    [&](const SceNetCtlAdhocPeerInfo &peer) {
-                        return currentTicks - peer.lastRecv > TIMEOUT_USEC;
-                    }),
-                emuenv.netctl.adhocPeers.end());
+            std::erase_if(emuenv.netctl.adhocPeers, [&](const SceNetCtlAdhocPeerInfo &peer) {
+                return currentTicks - peer.lastRecv > TIMEOUT_USEC;
+            });
 
             // Send the self info to other peers every 1 second
             if ((currentTicks - lastSendTicks) >= SEND_INTERVAL_USEC) {
@@ -592,6 +587,17 @@ EXPORT(int, sceNetCtlInetGetInfo, int code, SceNetCtlInfo *info) {
         info->device = 0; /*SCE_NET_CTL_DEVICE_WIRELESS*/
         // STUBBED("SCE_NETCTL_INFO_GET_DEVICE return SCE_NET_CTL_DEVICE_WIRELESS");
         break;
+    case SCE_NETCTL_INFO_GET_ETHER_ADDR: {
+        SceNetEtherAddr ether_addr{};
+        const int result = CALL_EXPORT(sceNetGetMacAddress, &ether_addr, 0);
+        static constexpr unsigned char zero_mac[sizeof(ether_addr.data)]{};
+        const bool valid = result >= 0 && std::memcmp(ether_addr.data, zero_mac, sizeof(zero_mac)) != 0;
+        if (!valid)
+            return RET_ERROR(SCE_NET_CTL_ERROR_NOT_AVAIL);
+
+        info->ether_addr = ether_addr;
+        break;
+    }
     case SCE_NETCTL_INFO_GET_RSSI_PERCENTAGE:
         info->rssi_percentage = 100;
         // STUBBED("code SCE_NETCTL_INFO_GET_RSSI_PERCENTAGE return 100%");
@@ -608,9 +614,6 @@ EXPORT(int, sceNetCtlInetGetInfo, int code, SceNetCtlInfo *info) {
         switch (code) {
         case SCE_NETCTL_INFO_GET_CNF_NAME:
             STUBBED("code SCE_NETCTL_INFO_GET_CNF_NAME not implemented");
-            break;
-        case SCE_NETCTL_INFO_GET_ETHER_ADDR:
-            STUBBED("code SCE_NETCTL_INFO_GET_ETHER_ADDR not implemented");
             break;
         case SCE_NETCTL_INFO_GET_MTU:
             STUBBED("code SCE_NETCTL_INFO_GET_MTU not implemented");

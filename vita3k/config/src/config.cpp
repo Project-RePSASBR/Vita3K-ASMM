@@ -35,6 +35,7 @@
 #include <cctype>
 #include <exception>
 #include <iostream>
+#include <map>
 #include <vector>
 
 namespace config {
@@ -46,7 +47,7 @@ static bool is_numeric_scalar(const YAML::Node &node) {
     if (value.empty())
         return false;
 
-    return std::all_of(value.begin(), value.end(), [](const unsigned char c) {
+    return std::ranges::all_of(value, [](const unsigned char c) {
         return std::isdigit(c) != 0;
     });
 }
@@ -164,7 +165,9 @@ static void check_members(Config &self, const Config &rhs) {
     self.load_config = rhs.load_config;
     self.fullscreen = rhs.fullscreen;
     self.console = rhs.console;
+    self.frontend = rhs.frontend;
     self.app_args = rhs.app_args;
+    self.launch_uri = rhs.launch_uri;
     self.load_app_list = rhs.load_app_list;
     self.self_path = rhs.self_path;
 }
@@ -214,7 +217,7 @@ static YAML::Node get(const Config &self) {
 
 // Load a function to the node network, and then update the members
 static bool load_new_config(Config &self, const fs::path &path) {
-    fs::ifstream fin(path);
+    std::ifstream fin(path);
     YAML::Node yaml_node = YAML::Load(fin);
     const bool legacy_keyboard_bindings = has_legacy_keyboard_bindings(yaml_node);
     update_members(self, yaml_node);
@@ -237,7 +240,7 @@ static std::set<std::string> get_file_set(const fs::path &loc, bool dirs_only = 
             cur_set.insert(it->path().stem().string());
         }
 
-        boost::system::error_code err{};
+        std::error_code err{};
         it.increment(err);
     }
     return cur_set;
@@ -305,7 +308,7 @@ ExitCode serialize_config(Config &cfg, const fs::path &output_path) {
     emitter << out_node;
     emitter << YAML::EndDoc;
 
-    fs::ofstream fo(output);
+    std::ofstream fo(output);
     if (!fo) {
         return InvalidApplicationPath;
     }
@@ -328,7 +331,10 @@ ExitCode init_config(Config &cfg, int argc, char **argv, const Root &root_paths,
 
     // Declare all options
     CLI::App app{ "Vita3K Command Line Interface" }; // "--help,-h" is automatically generated
+#ifdef _WIN32
+    // Elsewhere this would take absolute paths for options
     app.allow_windows_style_options();
+#endif
     app.allow_extras();
     app.enabled_by_default();
     app.get_formatter()->column_width(38);
@@ -347,8 +353,13 @@ ExitCode init_config(Config &cfg, int argc, char **argv, const Root &root_paths,
        ->default_val(false)->group("Input");
     input->add_option("--app-args,-Z", command_line.app_args, "Argument for app, use ', ' to separate arguments.")
         ->default_str("")->group("Input");
+    input->add_option("--launch-uri", command_line.launch_uri, "URI the app gets from sceAppMgrGetAppParam, as if another app launched it with it, like psgm:play?titleid=PCSA00000&arg=1")
+        ->default_str("")->group("Input");
     input->add_option("--load-app-list,-a", command_line.load_app_list, "Starts the emulator with load app list.")
        ->default_val(false)->group("Input");
+    const std::map<std::string, Frontend> frontends{ { "qt", Frontend::qt }, { "sdl", Frontend::sdl } };
+    input->add_option("--frontend", command_line.frontend, "Frontend to use: qt for the full interface, sdl for a plain window that runs the app given by -r and quits with it")
+        ->transform(CLI::CheckedTransformer(frontends, CLI::ignore_case))->default_str("qt")->group("Input");
     input->add_option("--self,-S", command_line.self_path, "Path to the self to run inside Title ID")
         ->default_str("eboot.bin")->group("Input");
     input->add_option("--installed-path,-r", command_line.run_app_path, "Path to the installed app to run")

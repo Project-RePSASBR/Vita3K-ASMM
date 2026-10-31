@@ -65,7 +65,7 @@ constexpr bool log_file_stat = false;
 namespace vfs {
 
 bool read_file(const VitaIoDevice device, FileBuffer &buf, const fs::path &vita_fs_path, const fs::path &vfs_file_path) {
-    const auto host_file_path = device::construct_emulated_path(device, vfs_file_path, vita_fs_path).generic_path();
+    const auto host_file_path = device::construct_emulated_path(device, vfs_file_path, vita_fs_path);
     return fs_utils::read_data(host_file_path, buf);
 }
 
@@ -93,7 +93,7 @@ SceSize get_directory_used_size(const VitaIoDevice device, const std::string &vf
 
 static bool is_valid_output_path(const VitaIoDevice device) {
     return !(device == VitaIoDevice::savedata0 || device == VitaIoDevice::savedata1 || device == VitaIoDevice::app0
-        || device == VitaIoDevice::_INVALID || device == VitaIoDevice::addcont0 || device == VitaIoDevice::tty0
+        || device == VitaIoDevice::_INVALID || device == VitaIoDevice::addcont0 || device == VitaIoDevice::cache0 || device == VitaIoDevice::tty0
         || device == VitaIoDevice::tty1 || device == VitaIoDevice::tty2 || device == VitaIoDevice::tty3
         || device == VitaIoDevice::music0 || device == VitaIoDevice::photo0 || device == VitaIoDevice::video0);
 }
@@ -160,6 +160,7 @@ void init_device_paths(IOState &io) {
     io.device_paths.savedata0 = "user/" + io.user_id + "/savedata/" + io.savedata;
     io.device_paths.app0 = "app/" + io.app_path;
     io.device_paths.addcont0 = "addcont/" + io.addcont;
+    io.device_paths.cache0.clear();
 }
 
 bool init_savedata_app_path(IOState &io, const fs::path &vita_fs_path) {
@@ -242,6 +243,13 @@ std::string translate_path(const char *path, VitaIoDevice &device, const IOState
     }
     case VitaIoDevice::addcont0: { // Redirect addcont0: to ux0:addcont/<title_id>
         relative_path = device::remove_device_from_path(relative_path, device, device_paths.addcont0);
+        device = VitaIoDevice::ux0;
+        break;
+    }
+    case VitaIoDevice::cache0: { // Redirect cache0: to ux0:cache/<title_id>
+        if (device_paths.cache0.empty())
+            return std::string{};
+        relative_path = device::remove_device_from_path(relative_path, device, device_paths.cache0);
         device = VitaIoDevice::ux0;
         break;
     }
@@ -373,7 +381,7 @@ SceUID open_file(IOState &io, const char *path, const int flags, const fs::path 
             if (!fs::exists(system_path.parent_path())) {
                 fs::create_directories(system_path.parent_path());
             }
-            fs::ofstream file(system_path);
+            std::ofstream file(system_path);
         }
     }
 
@@ -566,17 +574,17 @@ int stat_file(IOState &io, const char *file, SceIoStat *statp, const fs::path &v
 
 #ifdef _WIN32
     struct _stati64 sb;
-    if (_wstati64(file_path.generic_path().wstring().c_str(), &sb) < 0)
+    if (_wstati64(file_path.generic_wstring().c_str(), &sb) < 0)
         return IO_ERROR_UNK();
 #else
     struct stat64 sb;
-    if (stat64(file_path.generic_path().string().c_str(), &sb) < 0)
+    if (stat64(file_path.generic_string().c_str(), &sb) < 0)
         return IO_ERROR_UNK();
 #endif
 
-    last_access_time_ticks = RTC_OFFSET + (uint64_t)sb.st_atime * VITA_CLOCKS_PER_SEC;
-    creation_time_ticks = RTC_OFFSET + (uint64_t)sb.st_ctime * VITA_CLOCKS_PER_SEC;
-    last_modification_time_ticks = RTC_OFFSET + (uint64_t)sb.st_mtime * VITA_CLOCKS_PER_SEC;
+    last_access_time_ticks = RTC_OFFSET + static_cast<uint64_t>(sb.st_atime) * VITA_CLOCKS_PER_SEC;
+    creation_time_ticks = RTC_OFFSET + static_cast<uint64_t>(sb.st_ctime) * VITA_CLOCKS_PER_SEC;
+    last_modification_time_ticks = RTC_OFFSET + static_cast<uint64_t>(sb.st_mtime) * VITA_CLOCKS_PER_SEC;
 
 #ifndef _WIN32
 #undef st_atime
@@ -648,10 +656,10 @@ int remove_file(IOState &io, const char *file, const fs::path &vita_fs_path, con
 
     LOG_TRACE_IF(log_file_op, "{}: Removing file {} ({})", export_name, file, device::construct_normalized_path(device, translated_path));
 
-    boost::system::error_code error_code{};
-    auto res = fs::detail::remove(emulated_path, &error_code);
+    std::error_code error_code{};
+    const auto res = fs::remove(emulated_path, error_code);
 
-    if (!(res && !(error_code.value()))) {
+    if (!res || error_code.value()) {
         LOG_ERROR("Cannot remove file: {} ({})", file, device::construct_normalized_path(device, translated_path));
         LOG_ERROR("Error code: {} ({})", error_code.value(), error_code.message());
         return IO_ERROR(SCE_ERROR_ERRNO_ENOENT);
@@ -689,7 +697,7 @@ int rename(IOState &io, const char *old_name, const char *new_name, const fs::pa
 
     LOG_TRACE_IF(log_file_op, "{}: Renaming file {} to {} ({} to {})", export_name, old_name, new_name, emulated_old_path, emulated_new_path);
 
-    boost::system::error_code error_code{};
+    std::error_code error_code{};
     fs::rename(emulated_old_path, emulated_new_path, error_code);
 
     if (error_code.value()) {
@@ -766,8 +774,7 @@ SceUID read_dir(IOState &io, const SceUID fd, SceIoDirent *dent, const fs::path 
         const auto d_name_utf8 = get_file_in_dir(d);
         strncpy(dent->d_name, d_name_utf8.c_str(), sizeof(dent->d_name));
 
-        const auto cur_path = dir->second.get_system_location() / d_name_utf8;
-        if (!(cur_path.filename_is_dot() || cur_path.filename_is_dot_dot())) {
+        if (d_name_utf8 != "." && d_name_utf8 != "..") {
             const auto file_path = std::string(dir->second.get_vita_loc()) + '/' + d_name_utf8;
 
             LOG_TRACE_IF(log_file_op, "{}: Reading entry {} of fd: {}", export_name, file_path, log_hex(fd));
@@ -810,7 +817,9 @@ int create_dir(IOState &io, const char *dir, int mode, const fs::path &vita_fs_p
     if (fs::exists(emulated_path))
         return IO_ERROR(SCE_ERROR_ERRNO_EEXIST);
 
-    const auto parent_path = fs::path(emulated_path).remove_trailing_separator().parent_path();
+    auto parent_path = emulated_path.parent_path();
+    if (!emulated_path.has_filename())
+        parent_path = parent_path.parent_path();
     if (!fs::exists(parent_path)) // Vita cannot recursively create directories
         return IO_ERROR(SCE_ERROR_ERRNO_ENOENT);
 
