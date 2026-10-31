@@ -174,6 +174,12 @@
     <string name="updates_summary_available_with_date">A newer Vita3K build is available.\n\nCurrent version: %1$s\nLatest version: %2$s\nPublished: %3$s</string>
     <string name="updates_summary_custom_build">You are currently running a non-official or PR build.\n\nIf you update, you will switch to the latest official build and will no longer be on this custom or PR build.\n\nLatest official build: %1$s</string>
     <string name="updates_summary_custom_build_with_date">You are currently running a non-official or PR build.\n\nIf you update, you will switch to the latest official build and will no longer be on this custom or PR build.\n\nLatest official build: %1$s\nPublished: %2$s</string>
+    <!-- ASMM fork: updates come from the fork's releases (new keys, so translations of the upstream texts never show) -->
+    <string name="updates_asmm_release_available_title">Vita3K ASMM Release Available</string>
+    <string name="updates_asmm_summary_available">A newer Vita3K ASMM release is available.\n\nCurrent version: %1$s\nLatest version: %2$s</string>
+    <string name="updates_asmm_summary_available_with_date">A newer Vita3K ASMM release is available.\n\nCurrent version: %1$s\nLatest version: %2$s\nPublished: %3$s</string>
+    <string name="updates_asmm_summary_unknown_build">You are currently running a build that is not a published Vita3K ASMM release, such as a development or test build.\n\nLatest Vita3K ASMM release: %1$s</string>
+    <string name="updates_asmm_summary_unknown_build_with_date">You are currently running a build that is not a published Vita3K ASMM release, such as a development or test build.\n\nLatest Vita3K ASMM release: %1$s\nPublished: %2$s</string>
 
     <!-- Initial setup -->
     <string name="initial_setup_welcome_title">Welcome to Vita3K</string>

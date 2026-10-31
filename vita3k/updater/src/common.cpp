@@ -5,12 +5,13 @@
 
 namespace updater {
 
+// ASMM fork: the published releases of Project-RePSASBR/Vita3K-ASMM, not upstream's continuous build
 std::string release_api_url() {
-    return "https://api.github.com/repos/Vita3K/Vita3K/releases/tags/continuous";
+    return "https://api.github.com/repos/Project-RePSASBR/Vita3K-ASMM/releases?per_page=30";
 }
 
 std::string release_page_url() {
-    return "https://github.com/Vita3K/Vita3K/releases/tag/continuous";
+    return "https://github.com/Project-RePSASBR/Vita3K-ASMM/releases";
 }
 
 std::string display_version(const UpdateInfo &info) {

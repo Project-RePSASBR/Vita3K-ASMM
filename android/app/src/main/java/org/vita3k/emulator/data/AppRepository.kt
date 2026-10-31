@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.vita3k.emulator.NativeLib
 import org.vita3k.emulator.ui.viewmodel.AppAction
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -15,14 +16,15 @@ internal object AppRepository {
         "https://api.github.com/repos/Vita3K/compatibility/releases/latest"
     private const val COMPAT_DB_URL =
         "https://github.com/Vita3K/compatibility/releases/download/compat_db/app_compat_db.xml.zip"
+    // ASMM fork: updates are the published releases of Project-RePSASBR/Vita3K-ASMM (drafts and pre-releases are
+    // ignored). Each release carries Vita3K-ASMM-<commit hash>-android.apk; that hash tells which release a build is.
     private const val UPDATE_RELEASE_URL =
-        "https://api.github.com/repos/Vita3K/Vita3K/releases/tags/continuous"
-    private const val UPDATE_PAGE_URL =
-        "https://github.com/Vita3K/Vita3K/releases/tag/continuous"
+        "https://api.github.com/repos/Project-RePSASBR/Vita3K-ASMM/releases?per_page=30"
+    const val UPDATE_PAGE_URL =
+        "https://github.com/Project-RePSASBR/Vita3K-ASMM/releases"
     private val compatVersionRegex =
         Regex("""Last updated: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z)""")
-    private val updateBuildRegex = Regex("""Vita3K Build:\s*(\d+)""")
-    private val currentBuildRegex = Regex("""^[^-]+-(\d+)(?:-|$)""")
+    private val updateAssetRegex = Regex("""^Vita3K-ASMM-([0-9a-fA-F]{7,40})-android\.apk$""")
     private val updateMetadataLineRegex =
         Regex("""^\s*(Corresponding commit:|Vita3K Build:)""", RegexOption.IGNORE_CASE)
 
@@ -79,20 +81,17 @@ internal object AppRepository {
         NativeLib.getAppInstallSize(titleId)
     }
 
-    suspend fun checkForUpdates(
-        appVersion: String,
-        officialBuild: Boolean
-    ): UpdateCheckResult = withContext(Dispatchers.IO) {
+    suspend fun checkForUpdates(appVersion: String): UpdateCheckResult = withContext(Dispatchers.IO) {
         val currentDisplayVersion = currentDisplayVersion(appVersion)
         val response = httpGetString(UPDATE_RELEASE_URL)
             ?: return@withContext UpdateCheckResult(
                 status = UpdateCheckStatus.Failed,
-                message = "Could not retrieve the latest Vita3K release information. Please try again later.",
+                message = "Could not retrieve the Vita3K ASMM release information. Please try again later.",
                 currentDisplayVersion = currentDisplayVersion
             )
 
-        val root = try {
-            JSONObject(response)
+        val releases = try {
+            parseReleases(JSONArray(response))
         } catch (_: Exception) {
             return@withContext UpdateCheckResult(
                 status = UpdateCheckStatus.Failed,
@@ -101,54 +100,82 @@ internal object AppRepository {
             )
         }
 
-        val body = root.optString("body").orEmpty()
-        val latestBuildNumber = updateBuildRegex.find(body)?.groupValues?.getOrNull(1)?.toLongOrNull()
+        val latest = releases.firstOrNull()
             ?: return@withContext UpdateCheckResult(
                 status = UpdateCheckStatus.Failed,
-                message = "The latest release does not advertise a usable Vita3K build number.",
+                message = "No published Vita3K ASMM release has an Android build yet.",
                 currentDisplayVersion = currentDisplayVersion
             )
 
-        val releaseName = root.optString("name").trim()
-        val tagName = root.optString("tag_name").trim()
-        val releaseUrl = root.optString("html_url").trim().ifBlank { UPDATE_PAGE_URL }
-        val info = UpdateInfo(
-            version = releaseName.ifBlank { tagName },
-            buildNumber = latestBuildNumber,
-            releaseUrl = releaseUrl,
-            publishedAt = root.optString("published_at").trim(),
-            notes = normalizedUpdateNotes(body)
-        )
-
-        val currentBuildNumber = currentBuildRegex.find(appVersion)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
-        val buildDelta = latestBuildNumber - currentBuildNumber
+        // app version = <version>-<build number>-<commit hash>
+        val currentHash = appVersion.split("-", limit = 3).getOrNull(2).orEmpty()
+        val currentIndex = releases.indexOfFirst { sameCommit(it.hash, currentHash) }
 
         when {
-            !officialBuild -> UpdateCheckResult(
+            // Not a published release: a development or test build
+            currentIndex < 0 -> UpdateCheckResult(
                 status = UpdateCheckStatus.CustomBuildCanUpdate,
                 message = "",
-                info = info,
+                info = latest.info,
                 currentDisplayVersion = currentDisplayVersion
             )
-            buildDelta > 0L -> UpdateCheckResult(
-                status = UpdateCheckStatus.UpdateAvailable,
-                message = "",
-                info = info,
-                currentDisplayVersion = currentDisplayVersion
-            )
-            buildDelta < 0L -> UpdateCheckResult(
-                status = UpdateCheckStatus.CurrentBuildNewerThanLatest,
-                message = "This installation appears newer than the latest official continuous build.",
-                info = info,
-                currentDisplayVersion = currentDisplayVersion
-            )
-            else -> UpdateCheckResult(
+            currentIndex == 0 -> UpdateCheckResult(
                 status = UpdateCheckStatus.UpToDate,
-                message = "You already have the latest official build installed.",
-                info = info,
-                currentDisplayVersion = currentDisplayVersion
+                message = "You already have the latest Vita3K ASMM release (${latest.info.version}).",
+                info = latest.info,
+                currentDisplayVersion = "${latest.info.version} ($currentHash)"
+            )
+            else -> {
+                // The notes start with every release newer than the running one
+                val newer = releases.subList(0, currentIndex).joinToString("\n") { "- ${it.info.version}" }
+                UpdateCheckResult(
+                    status = UpdateCheckStatus.UpdateAvailable,
+                    message = "",
+                    info = latest.info.copy(notes = "Newer releases:\n$newer\n\n${latest.info.notes}".trim()),
+                    currentDisplayVersion = "${releases[currentIndex].info.version} ($currentHash)"
+                )
+            }
+        }
+    }
+
+    private class AsmmRelease(val info: UpdateInfo, val hash: String)
+
+    // The published releases that ship an Android build, newest first
+    private fun parseReleases(array: JSONArray): List<AsmmRelease> {
+        val releases = mutableListOf<AsmmRelease>()
+        for (index in 0 until array.length()) {
+            val release = array.getJSONObject(index)
+            if (release.optBoolean("draft") || release.optBoolean("prerelease")) {
+                continue
+            }
+
+            val assets = release.optJSONArray("assets") ?: continue
+            val hash = (0 until assets.length())
+                .mapNotNull { assets.optJSONObject(it)?.optString("name") }
+                .firstNotNullOfOrNull { updateAssetRegex.matchEntire(it)?.groupValues?.get(1) }
+                ?: continue
+
+            val releaseName = release.optString("name").trim()
+            val tagName = release.optString("tag_name").trim()
+            releases += AsmmRelease(
+                info = UpdateInfo(
+                    version = releaseName.ifBlank { tagName },
+                    releaseUrl = release.optString("html_url").trim().ifBlank { UPDATE_PAGE_URL },
+                    publishedAt = release.optString("published_at").trim(),
+                    notes = normalizedUpdateNotes(release.optString("body").orEmpty())
+                ),
+                hash = hash
             )
         }
+
+        // ISO 8601 UTC timestamps sort as text
+        return releases.sortedByDescending { it.info.publishedAt }
+    }
+
+    // Short hashes of different lengths name the same commit when one starts with the other
+    private fun sameCommit(a: String, b: String): Boolean {
+        val length = minOf(a.length, b.length)
+        return length >= 7 && a.regionMatches(0, b, 0, length, ignoreCase = true)
     }
 
     private fun toAppInfo(native: NativeAppInfo): AppInfo = AppInfo(

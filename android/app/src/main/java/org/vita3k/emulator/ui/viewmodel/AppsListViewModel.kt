@@ -242,11 +242,9 @@ class AppsListViewModel(application: Application) : AndroidViewModel(application
         updateCheckInProgress = true
         viewModelScope.launch {
             try {
-                val result = AppRepository.checkForUpdates(
-                    appVersion = appVersion,
-                    officialBuild = NativeLib.isOfficialBuild()
-                )
-                if (manual || result.status == UpdateCheckStatus.UpdateAvailable || result.status == UpdateCheckStatus.CustomBuildCanUpdate) {
+                val result = AppRepository.checkForUpdates(appVersion = appVersion)
+                // ASMM fork: a startup check only speaks up for a newer release, never for a development or test build
+                if (manual || result.status == UpdateCheckStatus.UpdateAvailable) {
                     updateCheckResult = result
                 }
             } catch (cancelled: CancellationException) {

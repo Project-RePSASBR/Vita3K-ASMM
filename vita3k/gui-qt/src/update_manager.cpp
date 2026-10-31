@@ -72,19 +72,39 @@ QString format_relative_age(const std::string &published_at) {
     return tr_update("%1 month(s) ago").arg(std::max<qint64>(1, seconds / (86400 * 30)));
 }
 
-bool parse_build_number(const QString &body, std::uint64_t &build_number) {
-    static const QRegularExpression build_regex(QStringLiteral("Vita3K Build:\\s*(\\d+)"));
-    const auto match = build_regex.match(body);
-    if (!match.hasMatch())
-        return false;
+// ASMM fork: updates are the published releases of Project-RePSASBR/Vita3K-ASMM (drafts and pre-releases are
+// ignored). Each release carries one asset per platform named Vita3K-ASMM-<commit hash>-<variant>; the hash in
+// this platform's asset tells which release a build is.
+QString asmm_asset_suffix() {
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+    return QStringLiteral("-windows-arm64.zip");
+#elif defined(_WIN32)
+    return QStringLiteral("-windows-x64.zip");
+#elif defined(__APPLE__) && defined(__aarch64__)
+    return QStringLiteral("-macos-arm64.dmg");
+#elif defined(__APPLE__)
+    return QStringLiteral("-macos-x64.dmg");
+#elif defined(__linux__) && defined(__aarch64__)
+    return QStringLiteral("-aarch64.AppImage");
+#elif defined(__linux__)
+    return QStringLiteral("-x86_64.AppImage");
+#else
+    return {};
+#endif
+}
 
-    bool ok = false;
-    const qulonglong parsed = match.captured(1).toULongLong(&ok);
-    if (!ok || parsed == 0)
-        return false;
+struct AsmmRelease {
+    updater::UpdateInfo info;
+    // Release tag, for the changelog
+    QString tag;
+    // Commit hash from this platform's asset name
+    QString hash;
+};
 
-    build_number = parsed;
-    return true;
+// Short hashes of different lengths name the same commit when one starts with the other
+bool same_commit(const QString &a, const QString &b) {
+    const qsizetype length = std::min(a.size(), b.size());
+    return length >= 7 && a.left(length).compare(b.left(length), Qt::CaseInsensitive) == 0;
 }
 
 QString normalized_notes(const QString &body) {
@@ -116,49 +136,59 @@ QString to_html_with_breaks(const QString &text) {
     return escaped;
 }
 
-void parse_changelog(const QJsonObject &root, updater::UpdateInfo &info) {
-    const QJsonValue changelog_value = root.value(QStringLiteral("changelog"));
-    if (!changelog_value.isArray())
-        return;
-
-    for (const QJsonValue &entry_value : changelog_value.toArray()) {
-        if (!entry_value.isObject())
-            continue;
-
-        const QJsonObject entry_object = entry_value.toObject();
-        updater::ChangelogEntry entry;
-        entry.version = entry_object.value(QStringLiteral("version")).toString().toStdString();
-        entry.title = entry_object.value(QStringLiteral("title")).toString().toStdString();
-        if (!entry.version.empty() || !entry.title.empty())
-            info.changelog.push_back(std::move(entry));
-    }
-}
-
-bool parse_release_json(const std::string &json, updater::UpdateInfo &info, QString &error_message) {
+// The published releases that ship a build for this platform, newest first
+bool parse_release_list(const std::string &json, std::vector<AsmmRelease> &releases, QString &error_message) {
     QJsonParseError parse_error{};
     const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parse_error);
-    if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
+    if (parse_error.error != QJsonParseError::NoError || !document.isArray()) {
         error_message = tr_update("The GitHub release response could not be parsed.");
         return false;
     }
 
-    const QJsonObject root = document.object();
-    const QString body = root.value(QStringLiteral("body")).toString();
-    const QString published_at = root.value(QStringLiteral("published_at")).toString();
-    const QString release_name = root.value(QStringLiteral("name")).toString().trimmed();
-    const QString tag_name = root.value(QStringLiteral("tag_name")).toString().trimmed();
-    const QString release_url = root.value(QStringLiteral("html_url")).toString().trimmed();
-
-    if (!parse_build_number(body, info.build_number)) {
-        error_message = tr_update("The latest release does not advertise a usable Vita3K build number.");
+    const QString suffix = asmm_asset_suffix();
+    if (suffix.isEmpty()) {
+        error_message = tr_update("Vita3K ASMM releases have no build for this platform.");
         return false;
     }
 
-    info.version = (release_name.isEmpty() ? tag_name : release_name).toStdString();
-    info.release_url = (release_url.isEmpty() ? QString::fromStdString(updater::release_page_url()) : release_url).toStdString();
-    info.published_at = published_at.toStdString();
-    info.notes = normalized_notes(body).toStdString();
-    parse_changelog(root, info);
+    static const QRegularExpression asset_regex(QStringLiteral("^Vita3K-ASMM-([0-9a-fA-F]{7,40})-"));
+
+    for (const QJsonValue &release_value : document.array()) {
+        const QJsonObject root = release_value.toObject();
+        if (root.value(QStringLiteral("draft")).toBool() || root.value(QStringLiteral("prerelease")).toBool())
+            continue;
+
+        for (const QJsonValue &asset_value : root.value(QStringLiteral("assets")).toArray()) {
+            const QString asset_name = asset_value.toObject().value(QStringLiteral("name")).toString();
+            const auto match = asset_regex.match(asset_name);
+            if (!asset_name.endsWith(suffix) || !match.hasMatch())
+                continue;
+
+            const QString release_name = root.value(QStringLiteral("name")).toString().trimmed();
+            const QString tag_name = root.value(QStringLiteral("tag_name")).toString().trimmed();
+            const QString release_url = root.value(QStringLiteral("html_url")).toString().trimmed();
+
+            AsmmRelease release;
+            release.info.version = (release_name.isEmpty() ? tag_name : release_name).toStdString();
+            release.info.release_url = (release_url.isEmpty() ? QString::fromStdString(updater::release_page_url()) : release_url).toStdString();
+            release.info.published_at = root.value(QStringLiteral("published_at")).toString().toStdString();
+            release.info.notes = normalized_notes(root.value(QStringLiteral("body")).toString()).toStdString();
+            release.tag = tag_name;
+            release.hash = match.captured(1);
+            releases.push_back(std::move(release));
+            break;
+        }
+    }
+
+    if (releases.empty()) {
+        error_message = tr_update("No published Vita3K ASMM release has a build for this platform yet.");
+        return false;
+    }
+
+    // ISO 8601 UTC timestamps sort as text
+    std::stable_sort(releases.begin(), releases.end(), [](const AsmmRelease &a, const AsmmRelease &b) {
+        return a.info.published_at > b.info.published_at;
+    });
     return true;
 }
 
@@ -188,38 +218,43 @@ updater::UpdateCheckResult build_check_result() {
     const std::string response = net_utils::get_web_response(updater::release_api_url());
     if (response.empty()) {
         result.status = updater::UpdateCheckStatus::Failed;
-        result.message = tr_update("Could not retrieve the latest Vita3K release information. Please try again later.").toStdString();
+        result.message = tr_update("Could not retrieve the Vita3K ASMM release information. Please try again later.").toStdString();
         return result;
     }
 
+    std::vector<AsmmRelease> releases;
     QString parse_message;
-    if (!parse_release_json(response, result.info, parse_message)) {
+    if (!parse_release_list(response, releases, parse_message)) {
         result.status = updater::UpdateCheckStatus::Failed;
         result.message = parse_message.toStdString();
         return result;
     }
 
-    const auto current_build_number = static_cast<std::uint64_t>(app_number);
-    const auto build_delta = static_cast<std::int64_t>(result.info.build_number) - static_cast<std::int64_t>(current_build_number);
+    const QString current_hash = QString::fromUtf8(app_hash);
+    const auto current = std::find_if(releases.cbegin(), releases.cend(), [&current_hash](const AsmmRelease &release) {
+        return same_commit(release.hash, current_hash);
+    });
+    result.info = releases.front().info;
 
-    if (!updater::is_official_build()) {
+    // Not a published release: a development or test build
+    if (current == releases.cend()) {
         result.status = updater::UpdateCheckStatus::CustomBuildCanUpdate;
         return result;
     }
 
-    if (build_delta > 0) {
-        result.status = updater::UpdateCheckStatus::UpdateAvailable;
+    result.current_display_version = QStringLiteral("%1 (%2)").arg(QString::fromStdString(current->info.version), current_hash).toStdString();
+
+    if (current == releases.cbegin()) {
+        result.status = updater::UpdateCheckStatus::UpToDate;
+        result.message = tr_update("You already have the latest Vita3K ASMM release (%1).").arg(QString::fromStdString(current->info.version)).toStdString();
         return result;
     }
 
-    if (build_delta < 0) {
-        result.status = updater::UpdateCheckStatus::CurrentBuildNewerThanLatest;
-        result.message = tr_update("This installation appears newer than the latest official continuous build.").toStdString();
-        return result;
-    }
+    // The changelog lists every release newer than the running one
+    for (auto it = releases.cbegin(); it != current; ++it)
+        result.info.changelog.push_back({ it->tag.toStdString(), it->info.version });
 
-    result.status = updater::UpdateCheckStatus::UpToDate;
-    result.message = tr_update("You already have the latest official build installed.").toStdString();
+    result.status = updater::UpdateCheckStatus::UpdateAvailable;
     return result;
 }
 
@@ -345,11 +380,10 @@ void UpdateManager::show_update_message(const updater::UpdateCheckResult &result
     QString summary;
     switch (result.status) {
     case updater::UpdateCheckStatus::CustomBuildCanUpdate:
-        title = tr_update("Official Build Available");
+        title = tr_update("Vita3K ASMM Release Available");
         summary = tr_update(
-            "You are currently running a non-official or PR build.\n\n"
-            "If you update, you will switch to the latest official build and will no longer be on this custom or PR build.\n\n"
-            "Latest official build: %1\n"
+            "You are currently running a build that is not a published Vita3K ASMM release, such as a development or test build.\n\n"
+            "Latest Vita3K ASMM release: %1\n"
             "Published: %2%3")
                       .arg(latest_version)
                       .arg(published_at)
@@ -359,7 +393,7 @@ void UpdateManager::show_update_message(const updater::UpdateCheckResult &result
     default:
         title = tr_update("Update Available");
         summary = tr_update(
-            "A newer Vita3K build is available.\n\n"
+            "A newer Vita3K ASMM release is available.\n\n"
             "Current version: %1\n"
             "Latest version: %2\n"
             "Published: %3%4")
@@ -374,7 +408,7 @@ void UpdateManager::show_update_message(const updater::UpdateCheckResult &result
         m_parent_widget,
         QMessageBox::Information,
         title,
-        tr_update("%1<br><br>Download page: <a href=\"%2\">Vita3K GitHub Releases</a>")
+        tr_update("%1<br><br>Download page: <a href=\"%2\">Vita3K ASMM releases</a>")
             .arg(to_html_with_breaks(summary), download_url.toHtmlEscaped()),
         {
             { QStringLiteral("open"), tr_update("Open Download Page"), QMessageBox::ActionRole, true },

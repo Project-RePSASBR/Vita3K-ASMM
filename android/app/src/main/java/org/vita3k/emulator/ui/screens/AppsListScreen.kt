@@ -60,6 +60,7 @@ import coil.compose.AsyncImage
 import org.vita3k.emulator.R
 import org.vita3k.emulator.data.FirmwareInstallState
 import org.vita3k.emulator.data.AppInfo
+import org.vita3k.emulator.data.AppRepository
 import org.vita3k.emulator.data.FirmwareComponent
 import org.vita3k.emulator.data.SortOption
 import org.vita3k.emulator.data.UpdateCheckResult
@@ -1042,7 +1043,7 @@ private fun UpdateCheckDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val defaultDownloadUrl = "https://github.com/Vita3K/Vita3K/releases/tag/continuous"
+    val defaultDownloadUrl = AppRepository.UPDATE_PAGE_URL
     val latestVersion = result.info.version.ifBlank {
         if (result.info.buildNumber > 0L) "Build ${result.info.buildNumber}" else stringResource(R.string.updates_latest_build)
     }
@@ -1051,7 +1052,7 @@ private fun UpdateCheckDialog(
 
     val titleRes = when (result.status) {
         UpdateCheckStatus.UpdateAvailable -> R.string.updates_available_title
-        UpdateCheckStatus.CustomBuildCanUpdate -> R.string.updates_official_available_title
+        UpdateCheckStatus.CustomBuildCanUpdate -> R.string.updates_asmm_release_available_title
         else -> R.string.updates_check_title
     }
 
@@ -1060,13 +1061,13 @@ private fun UpdateCheckDialog(
             UpdateCheckStatus.UpdateAvailable ->
                 if (publishedAt.isBlank()) {
                     context.getString(
-                        R.string.updates_summary_available,
+                        R.string.updates_asmm_summary_available,
                         result.currentDisplayVersion.ifBlank { "Unknown" },
                         latestVersion
                     )
                 } else {
                     context.getString(
-                        R.string.updates_summary_available_with_date,
+                        R.string.updates_asmm_summary_available_with_date,
                         result.currentDisplayVersion.ifBlank { "Unknown" },
                         latestVersion,
                         publishedAt
@@ -1074,9 +1075,9 @@ private fun UpdateCheckDialog(
                 }
             UpdateCheckStatus.CustomBuildCanUpdate ->
                 if (publishedAt.isBlank()) {
-                    context.getString(R.string.updates_summary_custom_build, latestVersion)
+                    context.getString(R.string.updates_asmm_summary_unknown_build, latestVersion)
                 } else {
-                    context.getString(R.string.updates_summary_custom_build_with_date, latestVersion, publishedAt)
+                    context.getString(R.string.updates_asmm_summary_unknown_build_with_date, latestVersion, publishedAt)
                 }
             else -> result.message
         }
