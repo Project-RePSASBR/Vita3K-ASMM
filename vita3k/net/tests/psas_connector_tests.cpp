@@ -43,6 +43,7 @@ TEST(psas_hello, layout_matches_design_note) {
     hello.title_id = "PCSF00153";
     hello.bound_address = "127.0.0.1:3658";
 
+    // clang-format off
     const std::vector<uint8_t> expected = {
         0x52, 0x50, 0x53, 0x42, // magic "RPSB"
         0x01, // hello version
@@ -55,6 +56,7 @@ TEST(psas_hello, layout_matches_design_note) {
         0x09, 'P', 'C', 'S', 'F', '0', '0', '1', '5', '3', // title id
         0x0E, '1', '2', '7', '.', '0', '.', '0', '.', '1', ':', '3', '6', '5', '8', // bound game address
     };
+    // clang-format on
     EXPECT_EQ(psas_encode_hello(hello), expected);
 }
 
