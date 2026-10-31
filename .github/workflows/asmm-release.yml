@@ -1,0 +1,228 @@
+name: ASMM Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_number:
+        description: "Release number (2 = tag V3K-ASMM-R2, title 'Vita3K ASMM - Release 2')"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  Check:
+    name: Check release number
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      title: ${{ steps.check.outputs.title }}
+    steps:
+      - name: Validate the number and make sure the tag is free
+        id: check
+        env:
+          NUMBER: ${{ inputs.release_number }}
+        run: |
+          if ! [[ "$NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Release number must be a positive number without leading zeros, got '$NUMBER'"
+            exit 1
+          fi
+
+          tag="V3K-ASMM-R${NUMBER}"
+
+          if [ -n "$(git ls-remote --tags "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "refs/tags/${tag}")" ]; then
+            echo "::error::Tag ${tag} already exists"
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "title=Vita3K ASMM - Release ${NUMBER}" >> "$GITHUB_OUTPUT"
+
+  Build:
+    name: Build
+    needs: Check
+    uses: ./.github/workflows/c-cpp.yml
+    # The Android job signs the APK with the KEYSTORE / SIGNING_* secrets
+    secrets: inherit
+    permissions:
+      contents: read
+
+  Release:
+    name: Create draft release
+    needs: [Check, Build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      # The ASMM release key (asmm-release.jks, alias asmm, CN=Vita3K-ASMM): Android only updates an installed
+      # copy from an APK signed with the same key
+      ASMM_APK_PACKAGE: org.vita3k.emulator.asmm
+      ASMM_APK_CERT_SHA256: 8115d74621b95433163aa373d03cb09105e759bd2e58976c66f5731c09d0c0bc
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: vita3k-*
+          path: artifacts
+
+      - name: Collect the release variants
+        run: |
+          shopt -s nullglob
+          mkdir release staging
+
+          prefix="Vita3K-ASMM-${GITHUB_SHA::8}"
+
+          # The single path matching a glob
+          only()
+          {
+            local matches=($1)
+
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "::error::Expected exactly one match for '$1', found ${#matches[@]}" >&2
+              exit 1
+            fi
+
+            printf '%s\n' "${matches[0]}"
+          }
+
+          # Every artifact must come from the commit being released (vita3k-<short sha>-<platform>)
+          for dir in artifacts/vita3k-*; do
+            short=$(basename "$dir")
+            short=${short#vita3k-}
+            short=${short%%-*}
+
+            if [[ "$GITHUB_SHA" != "$short"* ]]; then
+              echo "::error::$(basename "$dir") was not built from ${GITHUB_SHA}"
+              exit 1
+            fi
+          done
+
+          # Folder builds as zip files with a top-level folder, like Release 1
+          zip_folder()
+          {
+            local dir name
+            dir=$(only "artifacts/vita3k-*-$1/bin")
+            name="${prefix}-$1"
+
+            cp -R "$dir" "staging/$name"
+
+            # An artifact doesn't keep the executable bit
+            if [ -f "staging/$name/Vita3K" ]; then
+              chmod +x "staging/$name/Vita3K"
+            fi
+
+            (cd staging && zip -qr9 "../release/$name.zip" "$name")
+          }
+
+          copy_as()
+          {
+            local file
+            file=$(only "$1")
+            cp -- "$file" "release/$2"
+          }
+
+          zip_folder windows-x64
+          zip_folder windows-arm64
+          zip_folder linux-x64
+          zip_folder linux-arm64
+
+          copy_as 'artifacts/vita3k-*-macos-x64/*.dmg' "${prefix}-macos-x64.dmg"
+          copy_as 'artifacts/vita3k-*-macos-arm64/*.dmg' "${prefix}-macos-arm64.dmg"
+          copy_as 'artifacts/vita3k-*-android/app.apk' "${prefix}-android.apk"
+
+          # The AppImages keep the names they were built with: their .zsync update files refer to them by name
+          for arch in x86_64 aarch64; do
+            case "$arch" in
+              x86_64)  platform=linux-x64 ;;
+              aarch64) platform=linux-arm64 ;;
+            esac
+
+            appimage=$(only "artifacts/vita3k-*-${platform}/Vita3K-ASMM-*-${arch}.AppImage")
+            zsync=$(only "artifacts/vita3k-*-${platform}/Vita3K-ASMM-*-${arch}.AppImage.zsync")
+
+            if [ "$(basename "$appimage")" != "${prefix}-${arch}.AppImage" ]; then
+              echo "::error::Unexpected AppImage name $(basename "$appimage"), expected ${prefix}-${arch}.AppImage"
+              exit 1
+            fi
+
+            cp -- "$appimage" "$zsync" release/
+          done
+
+      - name: Check the Android package and its signing key
+        run: |
+          apk=$(echo release/*-android.apk)
+          build_tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+
+          package=$("$build_tools/aapt2" dump packagename "$apk")
+          cert=$("$build_tools/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+
+          echo "Package: ${package}"
+          echo "Signing certificate SHA-256: ${cert}"
+
+          if [ "$package" != "$ASMM_APK_PACKAGE" ]; then
+            echo "::error::The APK is ${package}, expected ${ASMM_APK_PACKAGE}"
+            exit 1
+          fi
+
+          if [ "$cert" != "$ASMM_APK_CERT_SHA256" ]; then
+            echo "::error::The APK is not signed with the ASMM release key (check the KEYSTORE and SIGNING_* secrets)"
+            exit 1
+          fi
+
+      - name: Write the checksums and the release notes
+        run: |
+          (cd release && sha256sum -- * > SHA256SUMS.txt)
+
+          {
+            echo "Built from \`${GITHUB_SHA}\` (${GITHUB_REF_NAME}) by [this workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+            echo
+            echo "| File | SHA-256 |"
+            echo "|---|---|"
+
+            for file in release/*; do
+              case "$file" in
+                */SHA256SUMS.txt)         continue ;;
+                *-windows-x64.zip)        label='Windows x64' ;;
+                *-windows-arm64.zip)      label='Windows ARM64' ;;
+                *-x86_64.AppImage)        label='Linux x64 (AppImage)' ;;
+                *-aarch64.AppImage)       label='Linux ARM64 (AppImage)' ;;
+                *-x86_64.AppImage.zsync)  label='Linux x64 (AppImage update data)' ;;
+                *-aarch64.AppImage.zsync) label='Linux ARM64 (AppImage update data)' ;;
+                *-linux-x64.zip)          label='Linux x64 (zip)' ;;
+                *-linux-arm64.zip)        label='Linux ARM64 (zip)' ;;
+                *-macos-x64.dmg)          label='MacOS Intel' ;;
+                *-macos-arm64.dmg)        label='MacOS Apple Silicon' ;;
+                *-android.apk)            label='Android' ;;
+                *)
+                  echo "::error::No OS label for $(basename "$file")"
+                  exit 1
+                  ;;
+              esac
+
+              hash=$(sha256sum "$file" | awk '{ print $1 }')
+              echo "| ${label}: $(basename "$file") | \`$hash\` |"
+            done
+          } > notes.md
+
+          ls -l release
+          cat notes.md
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.Check.outputs.tag }}
+          TITLE: ${{ needs.Check.outputs.title }}
+        run: |
+          # A draft has no tag yet, so the Check job cannot see one
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::A release or draft named ${TAG} already exists"
+            exit 1
+          fi
+
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --target "$GITHUB_SHA" \
+            --title "$TITLE" \
+            --notes-file notes.md
