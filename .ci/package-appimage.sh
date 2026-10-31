@@ -113,13 +113,15 @@ export APPDIR
 export ARCH
 export OUTPATH="$OUTPUT_DIR"
 export ADD_HOOKS="self-updater.hook"
-export UPINFO="gh-releases-zsync|Vita3K|Vita3K|continuous|Vita3K-$ARCH.AppImage.zsync"
+# ASMM fork: self-update from the fork's latest published release, never from upstream's continuous build
+export UPINFO="gh-releases-zsync|Project-RePSASBR|Vita3K-ASMM|latest|Vita3K-ASMM-*-$ARCH.AppImage.zsync"
 export ICON="$INSTALL_PREFIX/share/icons/hicolor/scalable/apps/org.vita3k.vita3k.svg"
 export DESKTOP="$INSTALL_PREFIX/share/applications/org.vita3k.vita3k.desktop"
 export DEPLOY_OPENGL=1
 export DEPLOY_VULKAN=1
 export DEPLOY_PULSE=1
-export OUTNAME="Vita3K-$ARCH.AppImage"
+# ASMM fork: the release name as built, since the .zsync refers to the AppImage by this file name
+export OUTNAME="Vita3K-ASMM-$(git rev-parse --short=8 HEAD)-$ARCH.AppImage"
 
 
 DEBLOATED_PACKAGES_URL="https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/get-debloated-pkgs.sh"
